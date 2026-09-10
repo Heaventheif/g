@@ -1,0 +1,69 @@
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main          # يُشغَّل عند كل push على الفرع الرئيسي
+  workflow_dispatch:  # أو يدوياً من واجهة GitHub
+
+jobs:
+  sync-to-hf:
+    name: Push to HuggingFace Space
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─── 1. استنساخ المستودع مع كامل التاريخ ─────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # كامل التاريخ ضروري لـ git push صحيح
+          lfs: true            # تحميل ملفات Git LFS (مطلوب لـ .gitattributes الخاص بـ HF)
+
+      # ─── 2. إعداد Git LFS ─────────────────────────────────────────────────
+      - name: Setup Git LFS
+        run: |
+          git lfs install
+          git lfs pull
+
+      # ─── 3. ضبط هوية Git ──────────────────────────────────────────────────
+      - name: Configure Git identity
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name  "github-actions[bot]"
+
+      # ─── 4. إضافة remote الخاص بـ HuggingFace ────────────────────────────
+      - name: Add HuggingFace remote
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # الصيغة: https://<username>:<token>@huggingface.co/spaces/<owner>/<space>
+          git remote add hf \
+            "https://kiyunhai:${HF_TOKEN}@huggingface.co/spaces/kiyunhai/g"
+
+      # ─── 5. دفع الكود إلى HuggingFace Space ──────────────────────────────
+      - name: Push to HuggingFace Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git push hf main --force
+          # --force مفيد لتجاوز أي commit تلقائي من HF (مثل تحديث README)
+
+      # ─── 6. (اختياري) التحقق عبر huggingface_hub ─────────────────────────
+      # هذه الخطوة تطبع معلومات الـ Space بعد النشر للتأكد من نجاحه
+      - name: Verify deployment via huggingface_hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install --quiet huggingface_hub
+          python3 - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+
+          api   = HfApi(token=os.environ["HF_TOKEN"])
+          info  = api.space_info(repo_id="kiyunhai/g")
+
+          print(f"✅ Space : {info.id}")
+          print(f"   SDK   : {info.cardData.get('sdk', 'N/A')}")
+          print(f"   URL   : https://huggingface.co/spaces/{info.id}")
+          print(f"   Stage : {getattr(info, 'runtime', {})}")
+          EOF
