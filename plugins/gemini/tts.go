@@ -1,6 +1,7 @@
 // tts.go — TTS pipeline (بدون Gemini):
-//   1. Groq (Orpheus Arabic) — الأساسي، مع تدوير أصوات المؤدين
-//   2. Edge TTS (Microsoft Neural) — احتياط عربي مجاني بدون مفتاح API
+//  1. Groq (Orpheus Arabic) — الأساسي، مع تدوير أصوات المؤدين
+//  2. Edge TTS (Microsoft Neural) — احتياط عربي مجاني بدون مفتاح API
+//  3. Google Translate TTS — احتياط HTTP نهائي
 //
 // Gemini TTS: محذوف بالكامل (محظور على HuggingFace Spaces).
 package gemini
@@ -11,10 +12,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -150,7 +153,10 @@ func pcmToWav(pcm []byte, sampleRate, channels, bitDepth int) []byte {
 }
 
 func putUint32LE(b []byte, v uint32) {
-	b[0] = byte(v); b[1] = byte(v >> 8); b[2] = byte(v >> 16); b[3] = byte(v >> 24)
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
 }
 func putUint16LE(b []byte, v uint16) { b[0] = byte(v); b[1] = byte(v >> 8) }
 
@@ -179,7 +185,11 @@ func callEdgeTTS(ctx context.Context, text, voice string) ([]byte, error) {
 	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer dialCancel()
 
-	conn, _, _, err := ws.Dial(dialCtx, wsURL)
+	dialer := ws.Dialer{Header: ws.HandshakeHeaderHTTP(http.Header{
+		"Origin":     []string{"https://edge.microsoft.com"},
+		"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127.0.0.0 Safari/537.36"},
+	})}
+	conn, _, _, err := dialer.Dial(dialCtx, wsURL)
 	if err != nil {
 		return nil, fmt.Errorf("edge-tts: فشل الاتصال: %w", err)
 	}
@@ -251,6 +261,41 @@ func callEdgeTTS(ctx context.Context, text, voice string) ([]byte, error) {
 	return pcmToWav(pcmBuf.Bytes(), 24000, 1, 16), nil
 }
 
+func callGoogleTranslateTTS(ctx context.Context, text string) ([]byte, error) {
+	u := "https://translate.google.com/translate_tts?" + url.Values{
+		"client": {"tw-ob"}, "ie": {"UTF-8"}, "tl": {"ar"}, "q": {text},
+	}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "audio/mpeg,*/*;q=0.8")
+	resp, err := groqFallbackClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("google tts: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("google tts status %d", resp.StatusCode)
+	}
+	audio, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, fmt.Errorf("google tts read: %w", err)
+	}
+	if len(audio) < 128 {
+		return nil, fmt.Errorf("google tts returned empty audio")
+	}
+	return audio, nil
+}
+
+func audioMime(voice string) string {
+	if strings.Contains(voice, "Google") {
+		return "audio/mpeg"
+	}
+	return "audio/wav"
+}
+
 // ─── Pipeline الرئيسي: Groq → Edge TTS ────────────────────────────
 
 var groqFallbackClient = &http.Client{Timeout: 45 * time.Second}
@@ -271,6 +316,7 @@ func (s *Service) callTTSWithFallback(ctx context.Context, text, voice string) (
 			log.Printf("[tts] ✅ Groq (%s)", groqVoice)
 			return raw, groqVoice + " (Groq)", nil
 		}
+		groqErr = fmt.Errorf("groq returned invalid audio: %w", err)
 	}
 	log.Printf("[tts] Groq فشل (%s) — تجربة Edge TTS...", truncate(groqErr.Error(), 120))
 
@@ -283,9 +329,17 @@ func (s *Service) callTTSWithFallback(ctx context.Context, text, voice string) (
 		return raw, edgeVoice + " (Edge TTS)", nil
 	}
 	log.Printf("[tts] ❌ Edge TTS فشل أيضاً (%s)", truncate(edgeErr.Error(), 120))
+	var googleErr error
+	if raw, err := callGoogleTranslateTTS(ctx, text); err == nil {
+		log.Printf("[tts] ✅ Google Translate TTS كحل احتياطي نهائي")
+		return raw, "ar (Google TTS)", nil
+	} else {
+		googleErr = err
+		log.Printf("[tts] ❌ Google TTS فشل أيضاً (%s)", truncate(err.Error(), 120))
+	}
 
-	return nil, "", fmt.Errorf("كل المزودين فشلوا:\nGroq: %s\nEdge TTS: %s",
-		truncate(groqErr.Error(), 200), truncate(edgeErr.Error(), 200))
+	return nil, "", fmt.Errorf("كل المزودين فشلوا:\nGroq: %s\nEdge TTS: %s\nGoogle TTS: %s",
+		truncate(groqErr.Error(), 200), truncate(edgeErr.Error(), 200), truncate(googleErr.Error(), 200))
 }
 
 // ─── HTTP Handlers ──────────────────────────────────────────────────
@@ -324,7 +378,7 @@ func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, e
 	if cached, cachedVoice, ok := ttsFromCache(cacheKey); ok {
 		return TTSResponse{
 			AudioBase64: base64.StdEncoding.EncodeToString(cached),
-			MimeType:    "audio/wav",
+			MimeType:    audioMime(cachedVoice),
 			Voice:       cachedVoice,
 			Cached:      true,
 		}, nil
@@ -343,7 +397,7 @@ func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, e
 
 	return TTSResponse{
 		AudioBase64: base64.StdEncoding.EncodeToString(audio),
-		MimeType:    "audio/wav",
+		MimeType:    audioMime(usedVoice),
 		Voice:       usedVoice,
 		Cached:      false,
 	}, nil
@@ -352,9 +406,10 @@ func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, e
 // GET /gemini/tts/voices
 func (s *Service) handleTTSVoices(r *http.Request) (map[string]any, error) {
 	return map[string]any{
-		"groq_voices": groq.OrpheusArabicVoices(),
-		"edge_voices": edgeArabicVoices,
-		"pipeline":    "Groq (Orpheus Arabic) → Edge TTS (Microsoft Neural)",
+		"groq_voices":  groq.OrpheusArabicVoices(),
+		"edge_voices":  edgeArabicVoices,
+		"pipeline":     "Groq (Orpheus Arabic) → Edge TTS → Google Translate TTS",
+		"google_voice": "ar",
 	}, nil
 }
 
@@ -366,6 +421,6 @@ func (s *Service) handleTTSCacheStats(r *http.Request) (map[string]any, error) {
 	return map[string]any{
 		"cache_size":     size,
 		"cache_max_size": ttsCacheMaxSize,
-		"pipeline":       "Groq → Edge TTS",
+		"pipeline":       "Groq → Edge TTS → Google Translate TTS",
 	}, nil
 }
