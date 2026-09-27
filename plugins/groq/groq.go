@@ -29,7 +29,7 @@ const Description = "Groq AI Bot — Flexible Multi-Model Routing (Groq Only)"
 
 const (
 	// systemPrompt sets the default behavior and persona for the AI assistant.
-	systemPrompt = `أنت بوت مساعد ذكي اسمك "Sunken". أجب دائماً باللغة العربية بإيجاز (أقل من 300 كلمة). كن ودوداً ومهذباً. إذا أُرسلت إليك صورة أو صوت أو فيديو فحللها بدقة.`
+	systemPrompt = `أنت بوت مساعد ذكي اسمك "Sunken". أجب دائماً باللغة العربية بإيجاز (أقل من 300 كلمة). كن ودوداً ومهذباً. إذا أُرسلت إليك صورة أو صوت أو فيديو فحللها بدقة. في المحادثة الجماعية، الرسائل الموسومة بصيغة [اسم العضو]: تمثل أعضاء مختلفين؛ حافظ على هذا التفريق، وواصل النقاش من السياق السابق، ولا تنسب كلام عضو إلى آخر.`
 	// whisperModel specifies the model used for audio transcriptions.
 	whisperModel = "whisper-large-v3"
 	// ttsModel/ttsVoice specify the Groq Orpheus Arabic (Saudi dialect) text-to-speech model.
@@ -41,7 +41,7 @@ const (
 
 // Flexible model lists for each command type, ordered by fallback preference.
 var (
-	textModels   = []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
+	textModels = []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
 	// نماذج الرؤية المدعومة رسمياً في Groq (المصدر: console.groq.com/docs/vision)
 	// ملاحظة: meta-llama/llama-4-scout و llama-4-maverick تم إيقافهما نهائياً من قبل Groq
 	// (scout: يونيو 2026، maverick: فبراير 2026) ويُعيدان 404 الآن. البديل الرسمي الحالي
@@ -267,7 +267,7 @@ func (s *Service) dispatchAttachment(ctx context.Context, att *attachment, messa
 			return "", "", ferr
 		}
 		mime := guessMime(att.URL, raw)
-		reply, err = s.groqAudio(ctx, raw, mime, prompt)
+		reply, err = s.groqAudio(ctx, raw, mime, prompt, messages)
 		return reply, "groq-whisper", err
 
 	case "video":
@@ -425,8 +425,49 @@ func (s *Service) groqVision(ctx context.Context, messages []session.Message, im
 	return "", fmt.Errorf("ALL_VISION_MODELS_FAILED")
 }
 
-// groqAudio transcribes audio files using Whisper and processes text queries against the transcript.
-func (s *Service) groqAudio(ctx context.Context, audioRaw []byte, mime, prompt string) (string, error) {
+// buildGroqAudioContext keeps shared group history and attributes the transcription to its sender.
+func buildGroqAudioContext(messages []session.Message, transcription, prompt string) []session.Message {
+	speaker := ""
+	question := strings.TrimSpace(prompt)
+	if strings.HasPrefix(question, "[") {
+		if end := strings.Index(question, "]:"); end > 1 {
+			speaker = question[:end+2]
+			question = strings.TrimSpace(question[end+2:])
+		}
+	}
+	if speaker == "" {
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role != "user" {
+				continue
+			}
+			content := strings.TrimSpace(messages[i].Content)
+			if strings.HasPrefix(content, "[") {
+				if end := strings.Index(content, "]:"); end > 1 {
+					speaker = content[:end+2]
+					if question == "" {
+						question = strings.TrimSpace(content[end+2:])
+					}
+				}
+			}
+			break
+		}
+	}
+	for _, prefix := range []string{"[صوت]", "[audio]", "[voice]"} {
+		if strings.HasPrefix(strings.ToLower(question), strings.ToLower(prefix)) {
+			question = strings.TrimSpace(question[len(prefix):])
+			break
+		}
+	}
+	if question == "" {
+		question = "لخص ما قيل في هذا الصوت"
+	}
+	content := fmt.Sprintf("%s [تفريغ الصوت]: %s\nالسؤال: %s", speaker, transcription, question)
+	result := append([]session.Message(nil), messages...)
+	return append(result, session.Message{Role: "user", Content: strings.TrimSpace(content)})
+}
+
+// groqAudio transcribes audio files using Whisper and processes the transcript in shared group context.
+func (s *Service) groqAudio(ctx context.Context, audioRaw []byte, mime, prompt string, messages []session.Message) (string, error) {
 	mgr := groqKeys()
 	if mgr.Empty() {
 		return "", fmt.Errorf("NO_GROQ_KEY")
@@ -490,14 +531,7 @@ func (s *Service) groqAudio(ctx context.Context, audioRaw []byte, mime, prompt s
 		return "", err
 	}
 
-	followUp := strings.TrimSpace(prompt)
-	if followUp == "" {
-		followUp = "لخص ما قيل في هذا الصوت"
-	}
-	textMsgs := []session.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: fmt.Sprintf("[تفريغ الصوت]: %s\n\nالسؤال: %s", transcription, followUp)},
-	}
+	textMsgs := buildGroqAudioContext(messages, transcription, prompt)
 	reply, err := s.tryModels(ctx, textModels, textMsgs, 30*time.Second)
 	if err != nil {
 		return "", err

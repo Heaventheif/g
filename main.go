@@ -29,7 +29,6 @@ import (
 	"sunkenbot/plugins/novel"
 	"sunkenbot/plugins/ping"
 	"sunkenbot/plugins/pinterest"
-	"sunkenbot/plugins/sub"
 )
 
 const defaultPort = "7860"
@@ -47,7 +46,6 @@ var descriptions = map[string]string{
 	"novel":        novel.Description,
 	"ping":         ping.Description,
 	"pinterest":    pinterest.Description,
-	"sub":          sub.Description,
 }
 
 // servicesUsing يبني كل الخدمات باعتمادياتها الصريحة. هذا الموضع — وليس كل
@@ -60,7 +58,6 @@ var descriptions = map[string]string{
 func servicesUsing(py *pyclient.Client) []plugins.Service {
 	geminiClient := &http.Client{Timeout: 25 * time.Second}
 	groqDL := &http.Client{Timeout: 120 * time.Second}
-	subClient := &http.Client{Timeout: 60 * time.Second}
 	novelClient := &http.Client{} // بلا مهلة عامة — كل طلب يضبط مهلته عبر context، نفس السلوك القديم حرفياً
 	comicClient := &http.Client{Timeout: 20 * time.Second}
 
@@ -71,7 +68,6 @@ func servicesUsing(py *pyclient.Client) []plugins.Service {
 		mangabridge.New(),
 		novel.New(novelClient),
 		pinterest.New(shared.Client),
-		sub.New(subClient),
 		ping.New(),
 	}
 	// ─── المسارات الموكلة: plugin واحد يجمع كل endpoints الـ Python ─────────
@@ -91,7 +87,7 @@ type delegatedService struct {
 	routes []plugins.Route
 }
 
-func (d *delegatedService) Name() string  { return "delegated" }
+func (d *delegatedService) Name() string            { return "delegated" }
 func (d *delegatedService) Routes() []plugins.Route { return d.routes }
 
 // servicesWithPy يبني الخدمات ويعيد العميل المشترك نحو Python (مفصول عن

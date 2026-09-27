@@ -19,7 +19,7 @@ Render (فضاء واحد، منفذ واحد 7860)
 │
 ├── Go  (g) ──────────────────────────────────────────── المنفذ 7860
 │     ├─ مسارات سريعة تُحسَب في Go مباشرة:
-│     │    gemini, groq, comic, novel, sub, manga-bridge,
+│     │    gemini, groq, comic, novel, manga-bridge,
 │     │    pinterest, ping
 │     └─ مسارات ثقيلة تُوَّكل (proxy خام حرفي) إلى Python:
 │          chess (/process_move), dama, ocr
@@ -79,6 +79,10 @@ descriptions["mysvc"] = mysvc.Description  // ← سطر الوصف
 | `DATABASE_URL` | اختياري — NeonDB، يتطلب بناءً بـ `-tags postgres` وإلا يُتجاهَل بصمت (يجب أن ينتهي بـ `?sslmode=require`) |
 | `SESSION_HISTORY_LIMIT` | اختياري — عدد الرسائل المحفوظة لكل محادثة (افتراضي `40`) |
 | `STOCKFISH_PATH` | مسار ثنائي Stockfish البديل (افتراضي: يبحث في `PATH`) |
+
+## جلسات الذكاء الاصطناعي الجماعية
+
+تقبل واجهتا `/gemini` و`/groq` وضع الجلسة عبر `thread_id` و`sender_name` و`prompt`. تُستخدم قيمة `thread_id` مفتاحاً مشتركاً للسجل، ويُوسم دور المستخدم باسمه كي يميّز النموذج بين المشاركين. على عميل Messenger إرسال `threadID` المجموعة نفسها لكل عضو، وتحديد اسم مرسل كل رسالة؛ إدارة من يحق له الرد على رسالة البوت تبقى في العميل.
 
 ## البناء والتشغيل
 

@@ -111,7 +111,7 @@ func SafeFetch(ctx context.Context, client *http.Client, rawURL string, maxBytes
 // SafeFetch، لكنه يُعيد *http.Response مباشرة بدل قراءة الجسم بالكامل في
 // الذاكرة. مخصّص للحالات التي يجب فيها بث الاستجابة إلى القرص (مثل تحميل
 // فيديو كبير) مع فرض حد الحجم لاحقاً عبر io.LimitReader على resp.Body —
-// راجع plugins/sub لمثال. المستدعي مسؤول عن إغلاق resp.Body.
+// راجع plugins/groq لمثال. المستدعي مسؤول عن إغلاق resp.Body.
 func SafeFetchStream(ctx context.Context, client *http.Client, rawURL string) (*http.Response, error) {
 	u, pinnedIP, err := resolvePublicHost(ctx, rawURL)
 	if err != nil {

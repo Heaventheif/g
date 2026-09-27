@@ -22,7 +22,7 @@ import (
 	"sunkenbot/internal/session"
 )
 
-const Description = "Gemini 2.5 Flash (Multimodal) — دردشة + تحليل صور + بحث فعلي بالإنترنت + TTS/STT — جلسات جماعية + Groq fallback"
+const Description = "Gemini 2.5 Flash (Multimodal) — دردشة + تحليل صور + بحث فعلي بالإنترنت + TTS — جلسات جماعية + Groq fallback"
 
 const (
 	// نموذج الدردشة الرئيسي — أفضل موديل مجاني متاح حالياً.
@@ -35,7 +35,8 @@ const (
 	groqModel = "openai/gpt-oss-120b"
 
 	systemPrompt = `أنت بوت مساعد ذكي اسمك "Sunken". أجب باللغة العربية بإيجاز (أقل من 200 كلمة).
-كن ودوداً ومفيداً. عند السؤال عن أحداث جارية أو أخبار أو معلومات تتغير بمرور الوقت،
+كن ودوداً ومفيداً. في المحادثة الجماعية، الرسائل الموسومة بصيغة [اسم العضو]: تمثل أعضاء مختلفين؛ حافظ على هذا التفريق، وواصل النقاش من السياق السابق، ولا تنسب كلام عضو إلى آخر.
+عند السؤال عن أحداث جارية أو أخبار أو معلومات تتغير بمرور الوقت،
 استخدم بحث Google للحصول على معلومات محدّثة وأذكر المصدر.`
 )
 
@@ -57,7 +58,6 @@ func (s *Service) Routes() []plugins.Route {
 		{Method: "POST", Pattern: "/gemini", Handler: httpx.Handle(s.handleGemini)},
 		{Method: "POST", Pattern: "/gemini/tts", Handler: httpx.WrapJSON(s.handleTTS)},
 		{Method: "GET", Pattern: "/gemini/tts/voices", Handler: httpx.Handle(s.handleTTSVoices)},
-		{Method: "POST", Pattern: "/gemini/stt", Handler: httpx.WrapJSON(s.handleSTT)},
 		// بحث صريح بالإنترنت بدون ذاكرة جلسة
 		{Method: "POST", Pattern: "/gemini/search", Handler: httpx.Handle(s.handleSearch)},
 		// تحليل الصور (multimodal) — gemini-3.6-flash مجاناً
@@ -368,9 +368,9 @@ func (s *Service) callGroq(ctx context.Context, messages []session.Message) (str
 	}
 
 	payload := map[string]any{
-		"model":       groqModel,
-		"messages":    chatMsgs,
-		"max_tokens":  2048,
+		"model":      groqModel,
+		"messages":   chatMsgs,
+		"max_tokens": 2048,
 		// temperature محفوظة هنا فقط لأن Groq لا يزال يدعمها
 		"temperature": 0.7,
 	}

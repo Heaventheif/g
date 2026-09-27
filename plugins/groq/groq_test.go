@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"sunkenbot/internal/session"
 )
 
 // TestParseAttachment_RootLevel يوثّق العطل الحرِج الذي دفع لكتابة هذا
@@ -69,5 +71,27 @@ func TestHandleGroq_MissingBody(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "messages أو prompt مطلوب") {
 		t.Errorf("unexpected error body: %s", rec.Body.String())
+	}
+}
+
+func TestBuildGroqAudioContextPreservesGroupSpeakers(t *testing.T) {
+	previous := []session.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: "[ليلى]: ما الخطة؟"},
+		{Role: "assistant", Content: "لنبدأ بتحديد الهدف."},
+		{Role: "user", Content: "[عمر]: [صوت] لخّص التسجيل"},
+	}
+	got := buildGroqAudioContext(previous, "نحتاج إلى ميزانية", "[عمر]: [صوت] لخّص التسجيل")
+	if len(got) != len(previous)+1 {
+		t.Fatalf("message count = %d, want %d", len(got), len(previous)+1)
+	}
+	if got[1].Content != "[ليلى]: ما الخطة؟" || got[2].Content != "لنبدأ بتحديد الهدف." {
+		t.Fatal("previous group turns were not preserved")
+	}
+	last := got[len(got)-1].Content
+	for _, want := range []string{"[عمر]: [تفريغ الصوت]", "نحتاج إلى ميزانية", "السؤال: لخّص التسجيل"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("audio context %q does not contain %q", last, want)
+		}
 	}
 }
