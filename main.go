@@ -58,7 +58,7 @@ var descriptions = map[string]string{
 // py: العميل المشترك نحو Python الداخلية — nil يعني HF_PYTHON_URL غير
 // مضبوط ولا تُسجَّل المسارات الموكلة.
 func servicesUsing(py *pyclient.Client) []plugins.Service {
-	geminiClient := &http.Client{Timeout: 25 * time.Second}
+	geminiClient := &http.Client{Timeout: 60 * time.Second}
 	groqDL := &http.Client{Timeout: 120 * time.Second}
 	subClient := &http.Client{Timeout: 60 * time.Second}
 	novelClient := &http.Client{} // بلا مهلة عامة — كل طلب يضبط مهلته عبر context، نفس السلوك القديم حرفياً
