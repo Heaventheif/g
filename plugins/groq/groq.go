@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -36,12 +37,15 @@ const (
 	ttsModel = "canopylabs/orpheus-arabic-saudi"
 	ttsVoice = "fahad"
 	// ttsMaxChars is Orpheus's documented per-request input limit; longer replies are split into chunks.
-	ttsMaxChars = 190
+	ttsMaxChars       = 190
+	ttsMaxAttempts    = 3
+	ttsRetryBaseDelay = 250 * time.Millisecond
+	groqTTSEndpoint   = "https://api.groq.com/openai/v1/audio/speech"
 )
 
 // Flexible model lists for each command type, ordered by fallback preference.
 var (
-	textModels   = []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
+	textModels = []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
 	// نماذج الرؤية المدعومة رسمياً في Groq (المصدر: console.groq.com/docs/vision)
 	// ملاحظة: meta-llama/llama-4-scout و llama-4-maverick تم إيقافهما نهائياً من قبل Groq
 	// (scout: يونيو 2026، maverick: فبراير 2026) ويُعيدان 404 الآن. البديل الرسمي الحالي
@@ -539,9 +543,34 @@ func splitForTTS(text string) []string {
 	return chunks
 }
 
-// groqTTSChunk synthesizes a single chunk of text (must respect ttsMaxChars) into wav
-// audio, rotating through mgr's keys (Round-Robin start + automatic switch on 429).
+type groqTTSHTTPError struct {
+	status int
+	body   string
+}
+
+func (e *groqTTSHTTPError) Error() string {
+	return fmt.Sprintf("groq tts status %d: %s", e.status, e.body)
+}
+
+func isRetryableGroqTTSStatus(status int) bool {
+	return status == http.StatusInternalServerError || status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+func isRetryableGroqTTSError(err error) bool {
+	var statusErr *groqTTSHTTPError
+	return errors.As(err, &statusErr) && isRetryableGroqTTSStatus(statusErr.status)
+}
+
+// groqTTSChunk synthesizes a single Orpheus chunk, trying configured Groq API
+// keys in rotation and retrying transient 5xx responses before returning an error.
 func groqTTSChunk(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text, voice string) ([]byte, error) {
+	return groqTTSChunkAt(ctx, client, mgr, text, voice, groqTTSEndpoint)
+}
+
+// groqTTSChunkAt accepts an endpoint override so retries can be tested without
+// reaching the live Groq API.
+func groqTTSChunkAt(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text, voice, endpoint string) ([]byte, error) {
 	payload := map[string]any{
 		"model":           ttsModel,
 		"voice":           voice,
@@ -553,44 +582,79 @@ func groqTTSChunk(ctx context.Context, client *http.Client, mgr *keyrotate.Manag
 		return nil, err
 	}
 
-	var audio []byte
-	err = mgr.Do(func(key string) (bool, error) {
-		ctxTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
+	if mgr == nil || mgr.Empty() {
+		return nil, keyrotate.ErrNoKeys
+	}
+	keys := mgr.RotatedKeys()
+	var failures []string
+	for attempt := 0; attempt < ttsMaxAttempts; attempt++ {
+		retryRound := false
+		for keyIndex, key := range keys {
+			audio, err := groqTTSRequest(ctx, client, key, endpoint, buf)
+			if err == nil {
+				return audio, nil
+			}
+			failures = append(failures, fmt.Sprintf("key %d: %s", keyIndex+1, truncate(err.Error(), 160)))
+			if isRetryableGroqTTSError(err) {
+				retryRound = true
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		if !retryRound || attempt == ttsMaxAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(ttsRetryBaseDelay * time.Duration(1<<attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		keys = mgr.RotatedKeys()
+	}
+	return nil, fmt.Errorf("Groq TTS فشل مع جميع المفاتيح المتاحة: %s", strings.Join(failures, " | "))
+}
 
-		req, err := http.NewRequestWithContext(ctxTimeout, http.MethodPost,
-			"https://api.groq.com/openai/v1/audio/speech", bytes.NewReader(buf))
-		if err != nil {
-			return false, err
-		}
-		req.Header.Set("Authorization", "Bearer "+key)
-		req.Header.Set("Content-Type", "application/json")
+func groqTTSRequest(ctx context.Context, client *http.Client, key, endpoint string, payload []byte) ([]byte, error) {
+	ctxTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-		resp, err := client.Do(req)
-		if err != nil {
-			return false, err
-		}
-		defer resp.Body.Close()
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return false, err
-		}
-		if resp.StatusCode >= 400 {
-			return resp.StatusCode == http.StatusTooManyRequests,
-				fmt.Errorf("groq tts status %d: %s", resp.StatusCode, truncate(string(respBody), 200))
-		}
-		audio = respBody
-		return false, nil
-	})
+	req, err := http.NewRequestWithContext(ctxTimeout, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	return audio, nil
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, &groqTTSHTTPError{status: resp.StatusCode, body: truncate(string(respBody), 200)}
+	}
+	if len(respBody) == 0 {
+		return nil, fmt.Errorf("groq tts returned empty audio")
+	}
+	return respBody, nil
 }
 
 // orpheusArabicVoices: الأصوات المتاحة في canopylabs/orpheus-arabic-saudi على Groq.
 // أضف المزيد هنا عند إتاحتها رسمياً.
-var orpheusArabicVoices = []string{"fahad"}
+var orpheusArabicVoices = []string{"abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"}
+
+// OrpheusArabicModel returns the documented Saudi Arabic model ID.
+func OrpheusArabicModel() string { return ttsModel }
+
+// OrpheusArabicDefaultVoice returns the service's default Saudi Arabic voice.
+func OrpheusArabicDefaultVoice() string { return ttsVoice }
 
 // OrpheusArabicVoices يُعيد نسخة من قائمة أصوات Orpheus للاستخدام الخارجي.
 func OrpheusArabicVoices() []string {
