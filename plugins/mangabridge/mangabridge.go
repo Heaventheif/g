@@ -24,10 +24,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
@@ -40,8 +44,16 @@ import (
 const Description = "كشط فصول المانجا — Go خالص (chromedp/CDP) + بنية job كاملة"
 
 const (
-	jobTTL       = time.Hour
-	imagesSubdir = "data/manga_bridge/images"
+	jobTTL             = time.Hour
+	imagesSubdir       = "data/manga_bridge/images"
+	maxMangaImages     = 300
+	maxMangaImageBytes = 16 * 1024 * 1024
+)
+
+var (
+	mangaSlugInvalidRe = regexp.MustCompile(`[^a-z0-9]+`)
+	mangaChapterRe     = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+	jobIDRe            = regexp.MustCompile(`^[a-f0-9]{32}$`)
 )
 
 // ─── حالة الـ job في الذاكرة (تقابل جدول jobs في SQLite) ────────────
@@ -165,7 +177,24 @@ const (
 )
 
 func slugify(name string) string {
-	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), " ", "-")
+	name = strings.ToLower(strings.NewReplacer("'", "", "’", "").Replace(strings.TrimSpace(name)))
+	decomposed := norm.NFD.String(name)
+	var asciiBase strings.Builder
+	for _, r := range decomposed {
+		if !unicode.Is(unicode.Mn, r) {
+			asciiBase.WriteRune(r)
+		}
+	}
+	name = asciiBase.String()
+	return strings.Trim(mangaSlugInvalidRe.ReplaceAllString(name, "-"), "-")
+}
+
+func validChapterNumber(chapter string) bool {
+	if len(chapter) == 0 || len(chapter) > 16 || !mangaChapterRe.MatchString(chapter) {
+		return false
+	}
+	n, err := strconv.ParseFloat(chapter, 64)
+	return err == nil && n > 0 && n <= 100000
 }
 
 // waitForCloudflareTitle يقابل waitForCloudflare في manga_scraper.js
@@ -195,9 +224,17 @@ const extractImgSrcsJS = `
 (() => {
     const imgs = document.querySelectorAll('.page-break img, .reading-content img');
     const out = [];
+    const seen = new Set();
     for (const img of imgs) {
         const src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.getAttribute('src');
-        if (src && src.trim()) out.push(src.trim());
+        if (!src || !src.trim()) continue;
+        try {
+            const absolute = new URL(src.trim(), document.baseURI);
+            if (absolute.protocol !== 'https:' || seen.has(absolute.href)) continue;
+            seen.add(absolute.href);
+            out.push(absolute.href);
+            if (out.length >= 300) break;
+        } catch (_) {}
     }
     return out;
 })()
@@ -306,6 +343,9 @@ func browserCookieHeader(ctx context.Context, forURL string) (string, error) {
 // مع نفس الكوكيز (راجع browserCookieHeader) ونفس الـ User-Agent حتى
 // يبقى الخادم البعيد يرى نفس الهوية التي اجتازت تحدي Cloudflare.
 func fetchImages(ctx context.Context, srcs []string, referer, cookieHeader string) [][]byte {
+	if len(srcs) > maxMangaImages {
+		srcs = srcs[:maxMangaImages]
+	}
 	client := &http.Client{Timeout: 20 * time.Second}
 	buffers := make([][]byte, 0, len(srcs))
 
@@ -323,9 +363,9 @@ func fetchImages(ctx context.Context, srcs []string, referer, cookieHeader strin
 				resp, doErr := client.Do(req)
 				if doErr == nil {
 					if resp.StatusCode == http.StatusOK {
-						b, readErr := io.ReadAll(resp.Body)
+						b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxMangaImageBytes+1))
 						resp.Body.Close()
-						if readErr == nil {
+						if readErr == nil && len(b) <= maxMangaImageBytes && isImagePayload(b) {
 							body = b
 							cancel()
 							break
@@ -349,8 +389,8 @@ func fetchImages(ctx context.Context, srcs []string, referer, cookieHeader strin
 
 // scrapeChapter يقابل الدالة بنفس الاسم في manga_bridge.py الأصلي
 // (وscrapeChapter في manga_scraper.js السابق قبل حذفه): تشغّل جلسة
-// Chromium مخصصة كاملة، تكشط DOM صفحة الفصل، ثم تُحمِّل كل الصور
-// وتكتبها كملفات 0.jpg, 1.jpg, ... داخل outputDir.
+// Chromium مخصصة كاملة، تكشط DOM صفحة الفصل، ثم تُحمِّل الصور
+// وتكتبها بترتيب الصفحات وامتداد يطابق نوع الصورة داخل outputDir.
 func (s *Service) scrapeChapter(ctx context.Context, manga, chapter, outputDir string) (title, chapterURL string, imageCount int, err error) {
 	// حارس التزامن: يحد عدد نسخ Chromium المتشغّلة معاً.
 	s.sem <- struct{}{}
@@ -386,13 +426,44 @@ func (s *Service) scrapeChapter(ctx context.Context, manga, chapter, outputDir s
 		return "", "", 0, fmt.Errorf("تعذّر إنشاء مجلد الصور: %w", err)
 	}
 	for idx, buf := range buffers {
-		fpath := filepath.Join(outputDir, fmt.Sprintf("%d.jpg", idx))
+		fpath := filepath.Join(outputDir, fmt.Sprintf("%d%s", idx, imageFileExtension(buf)))
 		if err := os.WriteFile(fpath, buf, 0o644); err != nil {
 			return "", "", 0, fmt.Errorf("تعذّر كتابة الصورة %d: %w", idx, err)
 		}
 	}
 
 	return result.title, result.url, len(buffers), nil
+}
+
+func imageFileExtension(data []byte) string {
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return ".webp"
+	}
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" && (string(data[8:12]) == "avif" || string(data[8:12]) == "avis") {
+		return ".avif"
+	}
+	switch http.DetectContentType(data) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/avif":
+		return ".avif"
+	case "image/bmp":
+		return ".bmp"
+	case "image/tiff":
+		return ".tif"
+	default:
+		return ".img"
+	}
+}
+
+func isImagePayload(data []byte) bool {
+	return len(data) > 0 && imageFileExtension(data) != ".img"
 }
 
 // ─── تشغيل الـ job في الخلفية (goroutine تقابل BackgroundTasks) ─────
@@ -449,10 +520,10 @@ func (s *Service) handleCreateJob(r *http.Request) (createJobResult, error) {
 
 	manga := strings.TrimSpace(body.Manga)
 	chapter := strings.TrimSpace(body.Chapter)
-	if manga == "" || chapter == "" {
+	if manga == "" || len(manga) > 120 || !validChapterNumber(chapter) {
 		return createJobResult{}, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
-			Body: map[string]any{"detail": "الحقول manga و chapter مطلوبة"},
+			Body: map[string]any{"detail": "أدخل اسماً لا يتجاوز 120 حرفاً ورقم فصل موجباً مثل 12 أو 12.5"},
 		}
 	}
 
@@ -497,18 +568,24 @@ func (s *Service) handleGetJob(r *http.Request) (jobStatusResult, error) {
 func (s *Service) handleGetJobImage(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
 	idxStr := r.PathValue("idx")
+	if !jobIDRe.MatchString(jobID) {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"detail": "job_id غير صالح"})
+		return
+	}
 	idx, err := strconv.Atoi(idxStr)
 	if err != nil {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"detail": "idx غير صالح"})
 		return
 	}
 
-	path := filepath.Join(imagesSubdir, jobID, fmt.Sprintf("%d.jpg", idx))
-	if _, err := os.Stat(path); err != nil {
-		httpx.JSON(w, http.StatusNotFound, map[string]any{"detail": "الصورة غير موجودة"})
-		return
+	for _, ext := range []string{".jpg", ".png", ".gif", ".webp", ".avif", ".bmp", ".tif", ".img"} {
+		imagePath := filepath.Join(imagesSubdir, jobID, fmt.Sprintf("%d%s", idx, ext))
+		if _, err := os.Stat(imagePath); err == nil {
+			http.ServeFile(w, r, imagePath)
+			return
+		}
 	}
-	http.ServeFile(w, r, path)
+	httpx.JSON(w, http.StatusNotFound, map[string]any{"detail": "الصورة غير موجودة"})
 }
 
 // ─── أدوات مساعدة ──────────────────────────────────────────────────

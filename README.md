@@ -110,3 +110,10 @@ INTERNAL_TOKEN=secret ./sunkenbot
 - `ENV PATH="${PATH}:/usr/games"`: `stockfish` من مستودعات Debian تُثبَّت في `/usr/games` غير المدرج في PATH الافتراضي — بدون هذا السطر: `executable file not found in $PATH`.
 - `HEALTHCHECK` و`USER sunkenbot` غير-root (آمن: `chromedp.NoSandbox` دائماً بلا شرط).
 - مجلد `/app/data/manga_bridge/images` يُنشأ بصلاحيات `sunkenbot` في الـ Dockerfile — راجع `imagesSubdir` في `plugins/mangabridge`.
+
+
+## Novel and manga scraping
+
+`GET /novel/sites` lists `Freewebnovel` and `NovelFull`. `POST /novel` accepts `novel`, positive integer or decimal `chapter`, and optional `site`; the default remains `Freewebnovel`. NovelFull chapter resolution uses the visible chapter label from the index because fractional chapter URLs can be ambiguous. Both providers try HTTP first and use the shared Chromium fallback when needed; a detected challenge page is reported rather than treated as chapter content.
+
+The 3asq manga bridge normalizes manga names into safe slugs, accepts only positive integer/decimal chapter numbers, caps extraction at 300 images and 16 MiB per image, verifies image payload types, and serves each image with a matching file extension. Use the bot’s MangaDex integration when a MangaDex chapter is preferred.

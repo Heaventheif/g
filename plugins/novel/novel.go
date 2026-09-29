@@ -40,7 +40,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const Description = "جلب فصول الروايات من freewebnovel.com"
+const Description = "جلب فصول الروايات من Freewebnovel و NovelFull مع بديل متصفح مشترك"
 
 // Service يحمل عميل http.Client (بلا مهلة عامة — كل طلب يضبط مهلته عبر
 // context، تماماً كما كان httpClient الحزمي القديم) وحالة الكاش
@@ -417,6 +417,19 @@ func extractTitle(htmlStr string) string {
 
 // ─── جلب الصفحة عبر HTTP ────────────────────────────────────────
 
+func isChallengePage(pageHTML string) bool {
+	sample := strings.ToLower(pageHTML)
+	if len(sample) > 6000 {
+		sample = sample[:6000]
+	}
+	for _, marker := range []string{"just a moment", "checking your browser", "cf-chl-", "challenge-platform", "verify you are human", "attention required | cloudflare"} {
+		if strings.Contains(sample, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) fetchPageHTTP(ctx context.Context, url string) string {
 	const retries = 2
 	for attempt := 0; attempt <= retries; attempt++ {
@@ -429,12 +442,7 @@ func (s *Service) fetchPageHTTP(ctx context.Context, url string) string {
 				body := readAllLimited(resp.Body, 5*1024*1024)
 				resp.Body.Close()
 				if resp.StatusCode == 200 && len(body) > 500 {
-					lower := strings.ToLower(body)
-					sample := lower
-					if len(sample) > 3000 {
-						sample = sample[:3000]
-					}
-					if strings.Contains(sample, "just a moment") || strings.Contains(sample, "cloudflare") {
+					if isChallengePage(body) {
 						log.Printf("[novel] Cloudflare على %s", url)
 						cancel()
 						break
@@ -501,12 +509,7 @@ func fetchPageBrowser(ctx context.Context, url string) string {
 		return ""
 	}
 
-	lower := strings.ToLower(htmlContent)
-	sample := lower
-	if len(sample) > 3000 {
-		sample = sample[:3000]
-	}
-	if strings.Contains(sample, "just a moment") || strings.Contains(sample, "cloudflare") {
+	if isChallengePage(htmlContent) {
 		log.Printf("[novel] [Browser] Cloudflare لا يزال ظاهراً بعد الانتظار على %s", url)
 		return ""
 	}
@@ -516,10 +519,46 @@ func fetchPageBrowser(ctx context.Context, url string) string {
 
 // ─── الموقع (SITE في بايثون) ─────────────────────────────────────
 
-const siteName = "Freewebnovel"
+const (
+	siteName          = "Freewebnovel"
+	novelFullSiteName = "NovelFull"
+)
 
-func buildChapterURL(slug string, chapter int) string {
-	return fmt.Sprintf("https://freewebnovel.com/novel/%s/chapter-%d", slug, chapter)
+var chapterNumberPattern = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+
+func parseChapterNumber(value any) (string, bool) {
+	var raw string
+	switch v := value.(type) {
+	case float64:
+		raw = strconv.FormatFloat(v, 'f', -1, 64)
+	case string:
+		raw = strings.TrimSpace(v)
+	default:
+		return "", false
+	}
+	if !chapterNumberPattern.MatchString(raw) {
+		return "", false
+	}
+	number, err := strconv.ParseFloat(raw, 64)
+	if err != nil || number <= 0 || number > 100000 {
+		return "", false
+	}
+	return raw, true
+}
+
+func normalizeNovelSite(site string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(site)) {
+	case "", "freewebnovel":
+		return siteName, true
+	case "novelfull":
+		return novelFullSiteName, true
+	default:
+		return "", false
+	}
+}
+
+func buildChapterURL(slug, chapter string) string {
+	return fmt.Sprintf("https://freewebnovel.com/novel/%s/chapter-%s", slug, chapter)
 }
 
 var contentSelectors = []contentSelector{
@@ -544,12 +583,16 @@ var contentSelectors = []contentSelector{
 // (حقل novel_id القادم من العميل)، يُستخدم مباشرة كـ slug الرابط بدل
 // تخمينه تلقائياً عبر slugify(novelName) — مفيد عندما يعرف العميل الـ slug
 // الدقيق مسبقاً (مثلاً من نتيجة بحث سابقة) ويريد تفادي أي التباس.
-func (s *Service) fetchChapter(ctx context.Context, novelName string, chapterNum int, explicitSlug string) (map[string]any, error) {
+func (s *Service) fetchChapter(ctx context.Context, novelName, chapterNum, explicitSlug, requestedSite string) (map[string]any, error) {
+	selectedSite, ok := normalizeNovelSite(requestedSite)
+	if !ok {
+		return nil, fmt.Errorf("المصدر %q غير مدعوم حالياً", requestedSite)
+	}
 	cacheNovelKey := strings.ToLower(novelName)
 	if explicitSlug != "" {
 		cacheNovelKey = "id:" + strings.ToLower(explicitSlug)
 	}
-	key := fmt.Sprintf("freewebnovel:%s:%d", cacheNovelKey, chapterNum)
+	key := fmt.Sprintf("%s:%s:%s", strings.ToLower(selectedSite), cacheNovelKey, chapterNum)
 	if cached, ok := s.cacheGet(key); ok {
 		return cached, nil
 	}
@@ -561,44 +604,52 @@ func (s *Service) fetchChapter(ctx context.Context, novelName string, chapterNum
 	if slug == "" {
 		return nil, fmt.Errorf("اسم الرواية غير صالح")
 	}
-
-	url := buildChapterURL(slug, chapterNum)
-
-	log.Printf("[novel] [HTTP] جلب %s", url)
-	htmlStr := s.fetchPageHTTP(ctx, url)
-
-	if htmlStr == "" {
-		urlHTML := url + ".html"
-		log.Printf("[novel] [HTTP] جرب .html: %s", urlHTML)
-		htmlStr = s.fetchPageHTTP(ctx, urlHTML)
+	if !regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`).MatchString(slug) {
+		return nil, fmt.Errorf("معرّف الرواية غير صالح")
 	}
 
-	if htmlStr == "" {
-		log.Printf("[novel] [Browser] جلب %s", url)
-		htmlStr = fetchPageBrowser(ctx, url)
-	}
-
-	// freewebnovel.com غير متّسق في تسمية الـ slug عبر الروايات: بعضها
-	// بلا لاحقة (shadow-slave)، وبعضها بلاحقة -novel (martial-god-asura-novel).
-	// إن كان الـ slug مُخمَّناً تلقائياً (لا explicitSlug من العميل) وفشلت
-	// كل المحاولات أعلاه ولا يحمل بالفعل لاحقة -novel، جرّب إضافتها قبل
-	// الاستسلام نهائياً.
-	if htmlStr == "" && explicitSlug == "" && !strings.HasSuffix(slug, "-novel") {
-		altSlug := slug + "-novel"
-		altURL := buildChapterURL(altSlug, chapterNum)
-
-		log.Printf("[novel] [HTTP] جرب slug بديل: %s", altURL)
-		htmlStr = s.fetchPageHTTP(ctx, altURL)
-		if htmlStr == "" {
-			htmlStr = s.fetchPageHTTP(ctx, altURL+".html")
+	var url, htmlStr string
+	if selectedSite == novelFullSiteName {
+		var err error
+		htmlStr, url, err = s.fetchNovelFullChapter(ctx, slug, chapterNum)
+		if err != nil {
+			return nil, err
 		}
+	} else {
+		url = buildChapterURL(slug, chapterNum)
+		log.Printf("[novel] [HTTP] جلب %s", url)
+		htmlStr = s.fetchPageHTTP(ctx, url)
+
 		if htmlStr == "" {
-			log.Printf("[novel] [Browser] جرب slug بديل: %s", altURL)
-			htmlStr = fetchPageBrowser(ctx, altURL)
+			urlHTML := url + ".html"
+			log.Printf("[novel] [HTTP] جرب .html: %s", urlHTML)
+			htmlStr = s.fetchPageHTTP(ctx, urlHTML)
 		}
-		if htmlStr != "" {
-			slug = altSlug
-			url = altURL
+
+		if htmlStr == "" {
+			log.Printf("[novel] [Browser] جلب %s", url)
+			htmlStr = fetchPageBrowser(ctx, url)
+		}
+
+		// freewebnovel.com غير متّسق في تسمية الـ slug عبر الروايات: بعضها
+		// بلا لاحقة وبعضها بلاحقة -novel. جرّب اللاحقة قبل الاستسلام.
+		if htmlStr == "" && explicitSlug == "" && !strings.HasSuffix(slug, "-novel") {
+			altSlug := slug + "-novel"
+			altURL := buildChapterURL(altSlug, chapterNum)
+
+			log.Printf("[novel] [HTTP] جرب slug بديل: %s", altURL)
+			htmlStr = s.fetchPageHTTP(ctx, altURL)
+			if htmlStr == "" {
+				htmlStr = s.fetchPageHTTP(ctx, altURL+".html")
+			}
+			if htmlStr == "" {
+				log.Printf("[novel] [Browser] جرب slug بديل: %s", altURL)
+				htmlStr = fetchPageBrowser(ctx, altURL)
+			}
+			if htmlStr != "" {
+				slug = altSlug
+				url = altURL
+			}
 		}
 	}
 
@@ -626,11 +677,15 @@ func (s *Service) fetchChapter(ctx context.Context, novelName string, chapterNum
 		wordCount += len(strings.Fields(p))
 	}
 
+	var chapterValue any = chapterNum
+	if integerChapter, err := strconv.Atoi(chapterNum); err == nil {
+		chapterValue = integerChapter
+	}
 	result := map[string]any{
 		"title":      title,
-		"chapter":    chapterNum,
+		"chapter":    chapterValue,
 		"paragraphs": paragraphs,
-		"site":       siteName,
+		"site":       selectedSite,
 		"url":        url,
 		"word_count": wordCount,
 	}
@@ -644,25 +699,23 @@ func (s *Service) handleGetChapter(r *http.Request) (map[string]any, error) {
 	var body struct {
 		Novel   string `json:"novel"`
 		Chapter any    `json:"chapter"`
-		Site    string `json:"site"`     // اختياري — كان يُرسَل من ss-main/cmds/novel2.js ويُهمَل بصمت سابقاً
+		Site    string `json:"site"`     // اختياري — Freewebnovel افتراضي، أو NovelFull
 		NovelID string `json:"novel_id"` // اختياري — نفس الشيء، يُستخدم الآن كـ slug صريح
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		return nil, &httpx.HTTPError{
-			Code: http.StatusInternalServerError,
+			Code: http.StatusBadRequest,
 			Body: map[string]any{"error": truncate(err.Error(), 200)},
 		}
 	}
 
-	// هذا الـ plugin يدعم مصدراً واحداً فقط حالياً (Freewebnovel). إن طلب
-	// العميل مصدراً آخر صراحةً، الأفضل رفض واضح بدل تجاهل صامت للحقل —
-	// كان هذا الحقل يُرسَل من novel2.js ويُهمَل بالكامل من قبل.
-	if site := strings.TrimSpace(body.Site); site != "" && !strings.EqualFold(site, siteName) {
+	requestedSite, siteOK := normalizeNovelSite(body.Site)
+	if !siteOK {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
 			Body: map[string]any{
-				"error":           fmt.Sprintf("المصدر %q غير مدعوم حالياً", site),
-				"supported_sites": []string{siteName},
+				"error":           fmt.Sprintf("المصدر %q غير مدعوم حالياً", strings.TrimSpace(body.Site)),
+				"supported_sites": []string{siteName, novelFullSiteName},
 			},
 		}
 	}
@@ -676,21 +729,15 @@ func (s *Service) handleGetChapter(r *http.Request) (map[string]any, error) {
 		}
 	}
 
-	chapterNum := 0
-	switch v := body.Chapter.(type) {
-	case float64:
-		chapterNum = int(v)
-	case string:
-		chapterNum, _ = strconv.Atoi(v)
-	}
-	if chapterNum < 1 {
+	chapterNum, chapterOK := parseChapterNumber(body.Chapter)
+	if !chapterOK {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
-			Body: map[string]any{"error": "chapter موجب"},
+			Body: map[string]any{"error": "chapter رقم موجب صحيح أو عشري"},
 		}
 	}
 
-	result, err := s.fetchChapter(r.Context(), novelName, chapterNum, novelID)
+	result, err := s.fetchChapter(r.Context(), novelName, chapterNum, novelID, requestedSite)
 	if err != nil {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusNotFound,
@@ -701,7 +748,7 @@ func (s *Service) handleGetChapter(r *http.Request) (map[string]any, error) {
 }
 
 func (s *Service) handleListSites(r *http.Request) (map[string]any, error) {
-	return map[string]any{"sites": []string{siteName}}, nil
+	return map[string]any{"sites": []string{siteName, novelFullSiteName}}, nil
 }
 
 func (s *Service) handleClearCache(r *http.Request) (map[string]any, error) {
