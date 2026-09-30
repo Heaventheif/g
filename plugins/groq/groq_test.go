@@ -71,3 +71,17 @@ func TestHandleGroq_MissingBody(t *testing.T) {
 		t.Errorf("unexpected error body: %s", rec.Body.String())
 	}
 }
+
+func TestVisionModelIsCurrentGroqModel(t *testing.T) {
+	if len(visionModels) != 1 || visionModels[0] != "qwen/qwen3.8-27b" {
+		t.Fatalf("visionModels = %#v, want [qwen/qwen3.8-27b]", visionModels)
+	}
+
+	att := parseAttachment(map[string]any{
+		"kind":  "image",
+		"model": "qwen/qwen3.8-27b",
+	})
+	if att == nil || att.Model != "qwen/qwen3.8-27b" {
+		t.Fatalf("attachment model = %#v, want qwen/qwen3.8-27b", att)
+	}
+}

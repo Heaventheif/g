@@ -52,7 +52,6 @@ var (
 	// لنماذج الرؤية هو عائلة Qwen3 (تدعم image_url رسمياً حسب توثيق Groq الحالي).
 	visionModels = []string{
 		"qwen/qwen3.8-27b",
-		"qwen/qwen3.6-27b",
 	}
 )
 
@@ -92,6 +91,7 @@ type attachment struct {
 	URL         string `json:"url"`
 	Base64      string `json:"base64"`
 	ContentType string `json:"contentType"`
+	Model       string `json:"model"`
 }
 
 // parseAttachment safely extracts attachment data from raw JSON input.
@@ -105,6 +105,7 @@ func parseAttachment(raw any) *attachment {
 		URL:         stringOr(obj["url"], ""),
 		Base64:      stringOr(obj["base64"], ""),
 		ContentType: stringOr(obj["contentType"], ""),
+		Model:       stringOr(obj["model"], ""),
 	}
 }
 
@@ -258,7 +259,7 @@ func (s *Service) dispatchAttachment(ctx context.Context, att *attachment, messa
 		}
 
 		if imgURL != "" {
-			reply, err = s.groqVision(ctx, messages, imgURL)
+			reply, err = s.groqVision(ctx, messages, imgURL, att.Model)
 			return reply, "groq-vision", err
 		}
 
@@ -375,7 +376,7 @@ func guessMime(url string, raw []byte) string {
 
 // groqVision handles image analysis requests by cycling through vision-capable models.
 // imgURL يكون إما رابط https:// (يُرسَل مباشرة، حد 20MB) أو data:mime;base64,... (حد 4MB).
-func (s *Service) groqVision(ctx context.Context, messages []session.Message, imgURL string) (string, error) {
+func (s *Service) groqVision(ctx context.Context, messages []session.Message, imgURL, requestedModel string) (string, error) {
 	mgr := groqKeys()
 	if mgr.Empty() {
 		return "", fmt.Errorf("NO_GROQ_KEY")
@@ -402,8 +403,12 @@ func (s *Service) groqVision(ctx context.Context, messages []session.Message, im
 		}
 	}
 
+	models := visionModels
+	if requestedModel != "" {
+		models = []string{requestedModel}
+	}
 	var lastErr error
-	for _, model := range visionModels {
+	for _, model := range models {
 		payload := map[string]any{
 			"model":      model,
 			"messages":   chatMsgs,
@@ -859,7 +864,7 @@ func (s *Service) processVideo(ctx context.Context, url, prompt string, messages
 	}
 
 	imgURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(frameRaw)
-	reply, err := s.groqVision(ctx, messages, imgURL)
+	reply, err := s.groqVision(ctx, messages, imgURL, "")
 	if err != nil {
 		return videoFailMessage(err), nil
 	}
