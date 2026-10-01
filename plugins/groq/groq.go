@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,8 +30,6 @@ const Description = "Groq AI Bot — Flexible Multi-Model Routing (Groq Only)"
 const (
 	// systemPrompt sets the default behavior and persona for the AI assistant.
 	systemPrompt = `أنت بوت مساعد ذكي اسمك "Sunken". أجب دائماً باللغة العربية بإيجاز (أقل من 300 كلمة). كن ودوداً ومهذباً. إذا أُرسلت إليك صورة أو صوت أو فيديو فحللها بدقة.`
-	// whisperModel specifies the model used for audio transcriptions.
-	whisperModel = "whisper-large-v3"
 	// ttsModel/ttsVoice specify the Groq Orpheus Arabic (Saudi dialect) text-to-speech model.
 	ttsModel = "canopylabs/orpheus-arabic-saudi"
 	ttsVoice = "fahad"
@@ -74,6 +71,7 @@ func (s *Service) Name() string { return "groq" }
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
 		{Method: "POST", Pattern: "/groq", Handler: httpx.Handle(s.handleGroq)},
+		{Method: "POST", Pattern: "/groq/stt", Handler: httpx.Handle(s.handleSTT)},
 	}
 }
 
@@ -279,18 +277,6 @@ func (s *Service) dispatchAttachment(ctx context.Context, att *attachment, messa
 			return reply, "groq-vision", err
 		}
 
-	case "audio":
-		if att.URL == "" {
-			break
-		}
-		raw, _, ferr := s.fetchBase64(ctx, att.URL)
-		if ferr != nil {
-			return "", "", ferr
-		}
-		mime := guessMime(att.URL, raw)
-		reply, err = s.groqAudio(ctx, raw, mime, prompt)
-		return reply, "groq-whisper", err
-
 	case "video":
 		if att.URL == "" {
 			break
@@ -485,86 +471,6 @@ func (s *Service) groqVision(ctx context.Context, messages []session.Message, im
 		return "", lastErr
 	}
 	return "", fmt.Errorf("ALL_VISION_MODELS_FAILED")
-}
-
-// groqAudio transcribes audio files using Whisper and processes text queries against the transcript.
-func (s *Service) groqAudio(ctx context.Context, audioRaw []byte, mime, prompt string) (string, error) {
-	mgr := groqKeys()
-	if mgr.Empty() {
-		return "", fmt.Errorf("NO_GROQ_KEY")
-	}
-
-	extMap := map[string]string{
-		"audio/mp3": "mp3", "audio/mpeg": "mp3", "audio/mp4": "m4a",
-		"audio/m4a": "m4a", "audio/ogg": "ogg", "audio/wav": "wav",
-		"audio/webm": "webm", "audio/flac": "flac",
-	}
-	ext := extMap[mime]
-	if ext == "" {
-		ext = "mp3"
-	}
-
-	var transcription string
-	err := mgr.Do(func(key string) (bool, error) {
-		var buf bytes.Buffer
-		mw := multipart.NewWriter(&buf)
-		part, err := mw.CreateFormFile("file", "audio."+ext)
-		if err != nil {
-			return false, err
-		}
-		if _, err := part.Write(audioRaw); err != nil {
-			return false, err
-		}
-		_ = mw.WriteField("model", whisperModel)
-		_ = mw.WriteField("language", "ar")
-		_ = mw.WriteField("response_format", "text")
-		mw.Close()
-
-		ctxTimeout, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctxTimeout, http.MethodPost,
-			"https://api.groq.com/openai/v1/audio/transcriptions", &buf)
-		if err != nil {
-			return false, err
-		}
-		req.Header.Set("Authorization", "Bearer "+key)
-		req.Header.Set("Content-Type", mw.FormDataContentType())
-
-		resp, err := s.client.Do(req)
-		if err != nil {
-			return false, err
-		}
-		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode >= 400 {
-			return resp.StatusCode == http.StatusTooManyRequests,
-				fmt.Errorf("groq audio status %d: %s", resp.StatusCode, truncate(string(respBody), 200))
-		}
-
-		transcription = strings.TrimSpace(string(respBody))
-		if transcription == "" {
-			return false, fmt.Errorf("EMPTY_TRANSCRIPTION")
-		}
-		return false, nil
-	})
-	if err != nil {
-		return "", err
-	}
-
-	followUp := strings.TrimSpace(prompt)
-	if followUp == "" {
-		followUp = "لخص ما قيل في هذا الصوت"
-	}
-	textMsgs := []session.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: fmt.Sprintf("[تفريغ الصوت]: %s\n\nالسؤال: %s", transcription, followUp)},
-	}
-	reply, err := s.tryModels(ctx, textModels, textMsgs, 30*time.Second)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("🎵 التفريغ:\n%s\n\n💬 الرد:\n%s", transcription, reply), nil
 }
 
 // splitForTTS breaks text into chunks that respect Orpheus's per-request character limit,

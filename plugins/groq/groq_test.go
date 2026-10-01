@@ -45,11 +45,14 @@ func TestParseAttachment_RootLevel(t *testing.T) {
 func TestRoutes(t *testing.T) {
 	svc := New(http.DefaultClient, http.DefaultClient, nil)
 	routes := svc.Routes()
-	if len(routes) != 1 {
-		t.Fatalf("expected exactly 1 route, got %d", len(routes))
+	if len(routes) != 2 {
+		t.Fatalf("expected exactly 2 routes, got %d", len(routes))
 	}
 	if routes[0].Method != "POST" || routes[0].Pattern != "/groq" {
 		t.Errorf("route = %s %s, want POST /groq", routes[0].Method, routes[0].Pattern)
+	}
+	if routes[1].Method != "POST" || routes[1].Pattern != "/groq/stt" {
+		t.Errorf("route = %s %s, want POST /groq/stt", routes[1].Method, routes[1].Pattern)
 	}
 }
 
