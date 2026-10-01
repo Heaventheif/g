@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"sunkenbot/internal/httpx"
 	"sunkenbot/plugins/groq"
@@ -125,7 +126,7 @@ func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, e
 			Body: map[string]any{"error": "text مطلوب"},
 		}
 	}
-	if len(text) > 3000 {
+	if utf8.RuneCountInString(text) > 3000 {
 		return TTSResponse{}, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
 			Body: map[string]any{"error": "النص طويل جداً (3000 حرف كحد أقصى)"},

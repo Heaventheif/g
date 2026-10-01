@@ -144,8 +144,16 @@ func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 	last := messages[len(messages)-1]
 	prompt := strings.TrimSpace(stringOr(body["prompt"], last.Content))
 
-	// Dispatch request based on attachment type or standard text chat.
-	reply, provider, err := s.dispatchAttachment(ctx, att, messages, prompt)
+	// Use Groq's current built-in browser_search tool when explicitly requested.
+	var reply, provider string
+	var err error
+	if boolOr(body["web_search"]) {
+		reply, err = s.webSearch(ctx, messages, prompt)
+		provider = "groq-browser-search"
+	} else {
+		// Dispatch request based on attachment type or standard text chat.
+		reply, provider, err = s.dispatchAttachment(ctx, att, messages, prompt)
+	}
 	if err != nil {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusServiceUnavailable,
@@ -172,6 +180,7 @@ func (s *Service) handleSessionMode(ctx context.Context, body map[string]any) (m
 	prompt := strings.TrimSpace(stringOr(body["prompt"], ""))
 	doClear, _ := body["clear"].(bool)
 	att := parseAttachment(body["attachment"])
+	webSearch := boolOr(body["web_search"])
 
 	// Clear session history if requested.
 	if doClear {
@@ -188,7 +197,14 @@ func (s *Service) handleSessionMode(ctx context.Context, body map[string]any) (m
 	messages := append([]session.Message{{Role: "system", Content: systemPrompt}}, ctxMsgs...)
 	messages = append(messages, session.Message{Role: "user", Content: userContent})
 
-	reply, provider, err := s.dispatchAttachment(ctx, att, messages, prompt)
+	var reply, provider string
+	var err error
+	if webSearch {
+		reply, err = s.webSearch(ctx, messages, prompt)
+		provider = "groq-browser-search"
+	} else {
+		reply, provider, err = s.dispatchAttachment(ctx, att, messages, prompt)
+	}
 	if err != nil {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusServiceUnavailable,
@@ -285,6 +301,43 @@ func (s *Service) dispatchAttachment(ctx context.Context, att *attachment, messa
 
 	reply, err = s.tryModels(ctx, textModels, messages, 30*time.Second)
 	return reply, "groq-text", err
+}
+
+// webSearch uses Groq's current server-side browser_search tool. Compound was
+// decommissioned on 2026-09-21; browser_search is its supported replacement.
+func (s *Service) webSearch(ctx context.Context, messages []session.Message, prompt string) (string, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return "", fmt.Errorf("EMPTY_SEARCH_QUERY")
+	}
+	searchMessages := messages
+	if len(searchMessages) == 0 || searchMessages[len(searchMessages)-1].Role != "user" {
+		searchMessages = append(append([]session.Message{}, messages...), session.Message{Role: "user", Content: prompt})
+	}
+	payload := map[string]any{
+		"model":                 textModels[0],
+		"messages":              toChatMessages(searchMessages),
+		"tools":                 []map[string]string{{"type": "browser_search"}},
+		"tool_choice":           "required",
+		"max_completion_tokens": 2048,
+		"temperature":           0.2,
+	}
+	mgr := groqKeys()
+	if mgr.Empty() {
+		return "", fmt.Errorf("NO_GROQ_KEY")
+	}
+	var reply string
+	err := mgr.Do(func(key string) (bool, error) {
+		r, status, e := s.postGroqChat(ctx, key, payload, 60*time.Second)
+		if e != nil {
+			return status == http.StatusTooManyRequests, e
+		}
+		reply = r
+		return false, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return reply, nil
 }
 
 // tryModels iterates through a list of models in descending priority, and for each
@@ -975,6 +1028,11 @@ func parseMessages(raw any) []session.Message {
 		})
 	}
 	return out
+}
+
+func boolOr(v any) bool {
+	b, _ := v.(bool)
+	return b
 }
 
 // stringOr returns the string value if type assertion succeeds, otherwise returns the default value.
