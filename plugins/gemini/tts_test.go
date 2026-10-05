@@ -5,26 +5,27 @@ import (
 	"testing"
 )
 
-func TestHandleTTSVoicesUsesPiperArabicOnly(t *testing.T) {
+func TestHandleTTSVoicesUsesGroqPrimaryAndPiperFallback(t *testing.T) {
 	svc := &Service{}
 	got, err := svc.handleTTSVoices(httptest.NewRequest("GET", "/gemini/tts/voices", nil))
 	if err != nil {
 		t.Fatalf("handleTTSVoices() error = %v", err)
 	}
-	if got["piper_model"] != "ar_JO-kareem-medium" {
-		t.Fatalf("piper_model = %v", got["piper_model"])
+	if got["groq_model"] != "canopylabs/orpheus-arabic-saudi" {
+		t.Fatalf("groq_model = %v", got["groq_model"])
 	}
-	if got["default_voice"] != "ar_JO-kareem-medium" {
-		t.Fatalf("default_voice = %v, want ar_JO-kareem-medium", got["default_voice"])
+	if got["default_voice"] != "fahad" {
+		t.Fatalf("default_voice = %v, want fahad", got["default_voice"])
 	}
-	voices, ok := got["piper_voices"].([]string)
-	if !ok || len(voices) != 1 || voices[0] != "ar_JO-kareem-medium" {
-		t.Fatalf("piper_voices = %#v, want one Arabic Piper voice", got["piper_voices"])
+	groqVoices, ok := got["groq_voices"].([]string)
+	if !ok || len(groqVoices) != 6 {
+		t.Fatalf("groq_voices = %#v, want six Groq voices", got["groq_voices"])
 	}
-	if got["pipeline"] != "Piper Arabic-only local TTS" {
+	piperVoices, ok := got["piper_voices"].([]string)
+	if !ok || len(piperVoices) != 1 || piperVoices[0] != "ar_JO-kareem-medium" {
+		t.Fatalf("piper_voices = %#v, want one Piper fallback voice", got["piper_voices"])
+	}
+	if got["pipeline"] != "Groq Orpheus Arabic Saudi primary; Piper Arabic fallback" {
 		t.Fatalf("pipeline = %v", got["pipeline"])
-	}
-	if _, exists := got["groq_voices"]; exists {
-		t.Fatal("TTS voices endpoint must not advertise Groq voices")
 	}
 }
