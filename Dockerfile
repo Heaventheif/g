@@ -39,7 +39,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -tags postgres -trimpath -ldflags="-s -w" 
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl python3 python3-pip \
+	        ca-certificates curl python3 python3-pip \
+	        espeak-ng \
         # ─── مطلوبة لـ Go services (نفس Dockerfile القديم حرفياً) ───────
         chromium ffmpeg \
         # ─── مطلوبة لـ Python services (نفس Dockerfile s القديم حرفياً) ──
@@ -67,6 +68,12 @@ WORKDIR /app/python-services
 #     pip لم يعد يسمح بالتثبيت العام إلا بـ --break-system-packages.
 #     الحاوية مخصصة للبوت فقط ولا يشاركها أحد — هذا هو الحل المعياري.
 RUN python3 collect_requirements.py && pip install --no-cache-dir --break-system-packages -r requirements.txt
+
+# Piper Arabic-only TTS. Keep the model in the image so runtime requests are
+# local, deterministic, and do not depend on a third-party API key.
+RUN pip install --no-cache-dir --break-system-packages piper-tts \
+    && mkdir -p /opt/piper \
+    && python3 -m piper.download_voices --data-dir /opt/piper ar_JO-kareem-medium
 
 # ─── Go binary من مرحلة البناء ────────────────────────────────────────────
 COPY --from=build /sunkenbot /app/sunkenbot

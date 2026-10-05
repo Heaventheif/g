@@ -1,48 +1,29 @@
-// tts.go — Groq-only TTS using Orpheus Arabic Saudi and configured-key rotation.
-// The /gemini/tts path remains as a backwards-compatible route name.
+// tts.go — Piper Arabic-only TTS. The /gemini/tts path remains backwards-compatible.
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"math/rand"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"sunkenbot/internal/httpx"
-	"sunkenbot/plugins/groq"
 )
 
-// ─── Groq voice pool (Orpheus Arabic) ──────────────────────────────
-// الأصوات تأتي من groq.OrpheusArabicVoices() — تُعرَّف في groq.go.
-// التدوير: pool يُعاد ترتيبه عشوائياً كلما نفد.
-
-var (
-	groqPoolMu sync.Mutex
-	groqPool   []string
+const (
+	piperVoice      = "ar_JO-kareem-medium"
+	piperDataDir    = "/opt/piper"
+	ttsCacheMaxSize = 50
 )
 
-func nextGroqVoice() string {
-	groqPoolMu.Lock()
-	defer groqPoolMu.Unlock()
-	if len(groqPool) == 0 {
-		groqPool = groq.OrpheusArabicVoices()
-		rand.Shuffle(len(groqPool), func(i, j int) { groqPool[i], groqPool[j] = groqPool[j], groqPool[i] })
-	}
-	v := groqPool[len(groqPool)-1]
-	groqPool = groqPool[:len(groqPool)-1]
-	return v
-}
-
-// ─── TTS Cache (LRU 50 عنصر) ───────────────────────────────────────
-
-const ttsCacheMaxSize = 50
-
+// TTS Cache (LRU 50 عنصر)
 type ttsCacheEntry struct {
 	wav   []byte
 	voice string
@@ -83,28 +64,65 @@ func ttsToCache(key string, wav []byte, voice string) {
 	ttsCacheOrd = append(ttsCacheOrd, key)
 }
 
-// ─── Groq-only TTS ──────────────────────────────────────────────────
-
-var groqTTSClient = &http.Client{Timeout: 45 * time.Second}
-
-// callGroqTTS uses Groq Orpheus only; the Groq client rotates configured API keys.
-func (s *Service) callGroqTTS(ctx context.Context, text, voice string) ([]byte, string, error) {
-	groqVoice := voice
-	if groqVoice == "" {
-		groqVoice = nextGroqVoice()
+func hasArabicText(text string) bool {
+	for _, r := range text {
+		if (r >= '\u0600' && r <= '\u06ff') || (r >= '\u0750' && r <= '\u077f') {
+			return true
+		}
 	}
-	b64, err := groq.ArabicTTSWithVoice(ctx, groqTTSClient, text, groqVoice)
-	if err != nil {
-		return nil, "", err
-	}
-	raw, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return nil, "", fmt.Errorf("groq returned invalid audio: %w", err)
-	}
-	return raw, groqVoice + " (Groq)", nil
+	return false
 }
 
-// ─── HTTP Handlers ──────────────────────────────────────────────────
+func normalizePiperVoice(voice string) (string, error) {
+	voice = strings.TrimSpace(voice)
+	if voice == "" || voice == "kareem" || voice == piperVoice {
+		return piperVoice, nil
+	}
+	return "", fmt.Errorf("الصوت غير مدعوم؛ Piper العربي المتاح هو %s", piperVoice)
+}
+
+func callPiperTTS(ctx context.Context, text, voice string) ([]byte, error) {
+	voice, err := normalizePiperVoice(voice)
+	if err != nil {
+		return nil, err
+	}
+	out, err := os.CreateTemp("", "sunkenbot-piper-*.wav")
+	if err != nil {
+		return nil, fmt.Errorf("إنشاء ملف Piper مؤقت: %w", err)
+	}
+	outPath := out.Name()
+	if err := out.Close(); err != nil {
+		os.Remove(outPath)
+		return nil, fmt.Errorf("فتح ملف Piper المؤقت: %w", err)
+	}
+	defer os.Remove(outPath)
+
+	cmd := exec.CommandContext(ctx, "python3", "-m", "piper",
+		"--data-dir", piperDataDir,
+		"--model", voice,
+		"--output_file", outPath,
+	)
+	cmd.Stdin = strings.NewReader(text)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("Piper TTS فشل: %s", truncate(detail, 350))
+	}
+	audio, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("قراءة صوت Piper: %w", err)
+	}
+	if len(audio) == 0 {
+		return nil, fmt.Errorf("Piper أعاد ملفاً صوتياً فارغاً")
+	}
+	return audio, nil
+}
+
+// HTTP Handlers
 
 type TTSRequest struct {
 	Text  string `json:"text"`
@@ -121,57 +139,39 @@ type TTSResponse struct {
 func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, error) {
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
-		return TTSResponse{}, &httpx.HTTPError{
-			Code: http.StatusBadRequest,
-			Body: map[string]any{"error": "text مطلوب"},
-		}
+		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": "text مطلوب"}}
+	}
+	if !hasArabicText(text) {
+		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": "Piper TTS يدعم النص العربي فقط"}}
 	}
 	if utf8.RuneCountInString(text) > 3000 {
-		return TTSResponse{}, &httpx.HTTPError{
-			Code: http.StatusBadRequest,
-			Body: map[string]any{"error": "النص طويل جداً (3000 حرف كحد أقصى)"},
-		}
+		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": "النص طويل جداً (3000 حرف كحد أقصى)"}}
 	}
 
-	voice := strings.TrimSpace(req.Voice)
-
-	// تحقق من الـ Cache
+	voice, err := normalizePiperVoice(req.Voice)
+	if err != nil {
+		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": err.Error()}}
+	}
 	cacheKey := ttsCacheKey(text, voice)
 	if cached, cachedVoice, ok := ttsFromCache(cacheKey); ok {
-		return TTSResponse{
-			AudioBase64: base64.StdEncoding.EncodeToString(cached),
-			MimeType:    "audio/wav",
-			Voice:       cachedVoice,
-			Cached:      true,
-		}, nil
+		return TTSResponse{AudioBase64: base64.StdEncoding.EncodeToString(cached), MimeType: "audio/wav", Voice: cachedVoice, Cached: true}, nil
 	}
 
-	audio, usedVoice, err := s.callGroqTTS(ctx, text, voice)
+	audio, err := callPiperTTS(ctx, text, voice)
 	if err != nil {
-		return TTSResponse{}, &httpx.HTTPError{
-			Code: http.StatusServiceUnavailable,
-			Body: map[string]any{"error": "فشل Groq بعد تجربة مفاتيح API المتاحة: " + truncate(err.Error(), 450)},
-		}
+		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusServiceUnavailable, Body: map[string]any{"error": truncate(err.Error(), 450)}}
 	}
-
-	// حفظ في الـ Cache
-	ttsToCache(cacheKey, audio, usedVoice)
-
-	return TTSResponse{
-		AudioBase64: base64.StdEncoding.EncodeToString(audio),
-		MimeType:    "audio/wav",
-		Voice:       usedVoice,
-		Cached:      false,
-	}, nil
+	ttsToCache(cacheKey, audio, voice)
+	return TTSResponse{AudioBase64: base64.StdEncoding.EncodeToString(audio), MimeType: "audio/wav", Voice: voice, Cached: false}, nil
 }
 
 // GET /gemini/tts/voices
 func (s *Service) handleTTSVoices(r *http.Request) (map[string]any, error) {
 	return map[string]any{
-		"groq_model":    groq.OrpheusArabicModel(),
-		"groq_voices":   groq.OrpheusArabicVoices(),
-		"default_voice": groq.OrpheusArabicDefaultVoice(),
-		"pipeline":      "Groq Orpheus Arabic Saudi with configured API-key rotation",
+		"piper_model":   piperVoice,
+		"piper_voices":  []string{piperVoice},
+		"default_voice": piperVoice,
+		"pipeline":      "Piper Arabic-only local TTS",
 	}, nil
 }
 
@@ -180,9 +180,5 @@ func (s *Service) handleTTSCacheStats(r *http.Request) (map[string]any, error) {
 	ttsCacheMu.Lock()
 	size := len(ttsCacheMap)
 	ttsCacheMu.Unlock()
-	return map[string]any{
-		"cache_size":     size,
-		"cache_max_size": ttsCacheMaxSize,
-		"pipeline":       "Groq Orpheus Arabic Saudi with configured API-key rotation",
-	}, nil
+	return map[string]any{"cache_size": size, "cache_max_size": ttsCacheMaxSize, "pipeline": "Piper Arabic-only local TTS"}, nil
 }
