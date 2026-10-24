@@ -1,26 +1,16 @@
 # ═══════════════════════════════════════════════════════════════════════════
-#  SunkenBot — الفضاء الموحّد (Go + Python في حاوية واحدة)
+#  SunkenBot — ملف Go تنفيذي واحد (بلا Python)
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# البنية بعد هذا الملف (بدل فضاءين منفصلين kiyunhai + kiyunhai-s):
-#
-#   Render ──► Go (g)        : المنفذ 7860 — نفس HF_SPACE_URL القديم حرفياً
-#                ├─ endpoints السريعة تُحسب محلياً في Go:
-#                │    gemini, groq, comic, novel, sub, manga-bridge,
-#                │    pinterest, ping
-#                └─ endpoints الثقيلة تُوَّكل (proxy خام) إلى Python:
-#                     └─ Python (s): المنفذ 8001 — داخلي على localhost فقط
-#                        لا يراه أحد من الخارج
-#                        (chess, dama, ocr)
-#
-#  SunkenBot لا يعلم بهذا التقسيم إطلاقاً — يكلّم منفذاً واحداً
-#  (HF_SPACE_URL) والمسارات كلها كما كانت تماماً.
+#  Render ──► Go : المنفذ 7860 (HF_SPACE_URL)
+#               ├─ gemini, groq, comic, novel, sub, manga-bridge, pinterest, ping
+#               └─ chess (/process_move): قواعد + رسم + Stockfish — كله داخل Go
 #
 #  متغيرات البيئة:
-#    HF_SPACE_URL      — رابط الفضاء الخارجي (يستخدمه SunkenBot فقط)
-#    INTERNAL_TOKEN    — توكن الحماية بين Render↔Go و Go↔Python
-#    HF_PYTHON_URL     — يُصدَّر تلقائياً من run.sh (http://localhost:8001)
-#                        لا حاجة لضبطه يدوياً أبداً.
+#    HF_SPACE_URL     — رابط الفضاء الخارجي (يستخدمه SunkenBot فقط)
+#    INTERNAL_TOKEN   — توكن الحماية بين Render↔Go
+#    الشطرنج (اختيارية): STOCKFISH_PATH, STOCKFISH_POOL, STOCKFISH_HASH,
+#      STOCKFISH_THREADS, LICHESS_TOKEN, LICHESS_TIMEOUT_MS, LICHESS_MAX_FULLMOVE
 #
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -35,55 +25,38 @@ COPY . .
 RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -tags postgres -trimpath -ldflags="-s -w" -o /sunkenbot .
 
-# ════ المرحلة 2: التشغيل الموحّد ═══════════════════════════════════════════
+# ════ المرحلة 2: التشغيل ═══════════════════════════════════════════════════
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-	        ca-certificates curl python3 python3-pip \
-	        espeak-ng \
-        # ─── مطلوبة لـ Go services (نفس Dockerfile القديم حرفياً) ───────
+        ca-certificates curl \
+        # Go services
         chromium ffmpeg \
-        # ─── مطلوبة لـ Python services (نفس Dockerfile s القديم حرفياً) ──
-        libgl1 libglib2.0-0 \
-        libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-xlib-2.0-0 \
+        # محرك الشطرنج
         stockfish \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r sunkenbot && useradd -r -g sunkenbot -d /app sunkenbot
 
-# stockfish من مستودعات Debian تُثبَّت في /usr/games غير المدرج في PATH
-# الافتراضي — نفس ملاحظة إصلاح الملف القديم (لا تحذفها).
+# stockfish من مستودعات Debian يُثبَّت في /usr/games غير المدرج في PATH
+# الافتراضي (لا تحذف هذا السطر).
 ENV PATH="${PATH}:/usr/games"
 
+# ─── Piper Arabic TTS (احتياطي لـ Groq): ملف تنفيذي مستقل بلا Python ─────────
+# النموذج داخل الصورة ليبقى التشغيل محلياً ولا يعتمد على خدمة خارجية.
+# تحذير: روابط التنزيل أدناه لم تُجرَّب في بيئة التطوير — تحقق من أول بناء.
+RUN mkdir -p /opt/piper \
+    && curl -fsSL https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz \
+       | tar -xz -C /opt \
+    && ln -s /opt/piper/piper /usr/local/bin/piper \
+    && curl -fsSL -o /opt/piper/ar_JO-kareem-medium.onnx \
+       https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx \
+    && curl -fsSL -o /opt/piper/ar_JO-kareem-medium.onnx.json \
+       https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx.json
+
 WORKDIR /app
-
-# ─── Python services: نفس خطوات s القديمة حرفياً (للاستفادة من طبقات cache)
-# ─── main.py نقطة الدخول (لا تُنسَ — uvicorn --app-dir يحتاجها) ──────
-COPY python-services/main.py python-services/
-COPY python-services/requirements.base.txt python-services/
-COPY python-services/internal/ python-services/internal/
-COPY python-services/plugins/ python-services/plugins/
-COPY python-services/collect_requirements.py python-services/
-WORKDIR /app/python-services
-# ─── Debian bookworm فرضت PEP 668 (externally-managed-environment):
-#     pip لم يعد يسمح بالتثبيت العام إلا بـ --break-system-packages.
-#     الحاوية مخصصة للبوت فقط ولا يشاركها أحد — هذا هو الحل المعياري.
-RUN python3 collect_requirements.py && pip install --no-cache-dir --break-system-packages -r requirements.txt
-
-# Piper Arabic-only TTS. Keep the model in the image so runtime requests are
-# local, deterministic, and do not depend on a third-party API key.
-RUN pip install --no-cache-dir --break-system-packages piper-tts \
-    && mkdir -p /opt/piper \
-    && python3 -m piper.download_voices --data-dir /opt/piper ar_JO-kareem-medium
-
-# ─── Go binary من مرحلة البناء ────────────────────────────────────────────
 COPY --from=build /sunkenbot /app/sunkenbot
 
-# ─── orchestrator: يرفع Python على 8001 داخلياً ثم Go على 7860 ────────────
-WORKDIR /app
-COPY run.sh .
-RUN chmod +x run.sh
-
-# مجلد صور manga-bridge (plugins/mangabridge يكتب هنا) — نفس الملف القديم
+# مجلد صور manga-bridge (plugins/mangabridge يكتب هنا)
 RUN mkdir -p /app/data/manga_bridge/images && chown -R sunkenbot:sunkenbot /app
 
 USER sunkenbot
@@ -93,4 +66,4 @@ EXPOSE 7860
 ENV PORT=7860
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
     CMD curl -fsS "http://localhost:${PORT}/health" || exit 1
-CMD ["/app/run.sh"]
+CMD ["/app/sunkenbot"]

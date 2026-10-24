@@ -17,12 +17,11 @@ import (
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/middleware"
 	"sunkenbot/internal/plugins"
-	"sunkenbot/internal/pyclient"
 	"sunkenbot/internal/session"
 	"sunkenbot/internal/shared"
 
+	"sunkenbot/plugins/chess"
 	"sunkenbot/plugins/comic"
-	"sunkenbot/plugins/delegated"
 	"sunkenbot/plugins/gemini"
 	"sunkenbot/plugins/groq"
 	"sunkenbot/plugins/mangabridge"
@@ -39,8 +38,8 @@ const defaultPort = "7860"
 // Name/Routes، راجع internal/plugins) بدل توسيعها بميثود Description()
 // لخدمة عرض بحت في endpoint واحد.
 var descriptions = map[string]string{
+	"chess":        chess.Description,
 	"comic":        comic.Description,
-	"delegated":    delegated.Description,
 	"gemini":       gemini.Description,
 	"groq":         groq.Description,
 	"manga_bridge": mangabridge.Description,
@@ -50,21 +49,20 @@ var descriptions = map[string]string{
 	"sub":          sub.Description,
 }
 
-// servicesUsing يبني كل الخدمات باعتمادياتها الصريحة. هذا الموضع — وليس كل
+// services يبني كل الخدمات باعتمادياتها الصريحة. هذا الموضع — وليس كل
 // حزمة plugin بمفردها — هو المكان الوحيد الذي يقرر أي http.Client يُمرَّر
 // لأي خدمة (راجع جدول قرار http.Client في برومبت الترحيل لسبب كل
 // اختيار: shared.Client لكل عميل كانت مهلته 30 ثانية أصلاً، وعميل محلي
 // صريح لأي مهلة مختلفة — بما فيها "بلا مهلة إطلاقاً" لـ novel).
-// py: العميل المشترك نحو Python الداخلية — nil يعني HF_PYTHON_URL غير
-// مضبوط ولا تُسجَّل المسارات الموكلة.
-func servicesUsing(py *pyclient.Client) []plugins.Service {
+func services() []plugins.Service {
 	geminiClient := &http.Client{Timeout: 60 * time.Second}
 	groqDL := &http.Client{Timeout: 120 * time.Second}
 	subClient := &http.Client{Timeout: 60 * time.Second}
 	novelClient := &http.Client{} // بلا مهلة عامة — كل طلب يضبط مهلته عبر context، نفس السلوك القديم حرفياً
 	comicClient := &http.Client{Timeout: 20 * time.Second}
 
-	svcs := []plugins.Service{
+	return []plugins.Service{
+		chess.New(),
 		comic.New(comicClient),
 		gemini.New(geminiClient, session.New("gemini_sessions")),
 		groq.New(shared.Client, groqDL, session.New("groq_sessions")),
@@ -74,35 +72,6 @@ func servicesUsing(py *pyclient.Client) []plugins.Service {
 		sub.New(subClient),
 		ping.New(),
 	}
-	// ─── المسارات الموكلة: plugin واحد يجمع كل endpoints الـ Python ─────────
-	// إضافة endpoint موكَل جديد = سطر واحد في plugins/delegated/delegated.go
-	// (لا تعديل في هذا الملف). إذا كان HF_PYTHON_URL غير مضبوط فلا نسجّل
-	// المسارات الموكلة إطلاقاً — أفضل من مسارات تعطي 502 دائماً بصمت.
-	if py != nil {
-		svcs = append(svcs, &delegatedService{routes: delegated.Routes(py)})
-	}
-	return svcs
-}
-
-// delegatedService غلاف رقيق يرضي عقد plugins.Service للمسارات الموكلة —
-// تُبنى Routesها دفعة واحدة من delegated.Routes (كل endpoint موكَل له
-// handler خاص به في internal/delegate، فلا حاجة لـ struct لكل endpoint).
-type delegatedService struct {
-	routes []plugins.Route
-}
-
-func (d *delegatedService) Name() string  { return "delegated" }
-func (d *delegatedService) Routes() []plugins.Route { return d.routes }
-
-// servicesWithPy يبني الخدمات ويعيد العميل المشترك نحو Python (مفصول عن
-// servicesUsing حتى يبقى توقيعه نضيفاً للاختبار).
-func servicesWithPy() ([]plugins.Service, *pyclient.Client) {
-	py, err := pyclient.FromEnv(shared.Client)
-	if err != nil {
-		log.Printf("⚠️  [main] %s — المسارات الموكلة لـ Python (chess/dama/OCR) لن تعمل حتى يُضبط HF_PYTHON_URL", err)
-		py = nil
-	}
-	return servicesUsing(py), py
 }
 
 func main() {
@@ -110,7 +79,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// ─── / و /health: نفس المكافئ لـ main.py الأصلي ───────────────────
+	// ─── / و /health: فحص صحة سريع ───────────────────
 	mux.HandleFunc("GET /health", httpx.Handle(func(r *http.Request) (map[string]any, error) {
 		return map[string]any{
 			"status":    "healthy",
@@ -119,7 +88,7 @@ func main() {
 	}))
 
 	// ─── تسجيل كل خدمة صراحةً (بدل تحميل ديناميكي عبر registry) ───────
-	svcs, svcPy := servicesWithPy()
+	svcs := services()
 	pluginResults := map[string]any{}
 	for _, svc := range svcs {
 		routes := svc.Routes()
@@ -135,11 +104,6 @@ func main() {
 	}
 	log.Printf("[main] ✅ تم تحميل %d خدمة", len(pluginResults))
 
-	// ─── فحص صحة خدمة Python الداخلية في الخلفية ─────────────────────────
-	if svcPy != nil {
-		delegated.HealthCheck(svcPy)
-	}
-
 	mux.HandleFunc("GET /{$}", httpx.Handle(func(r *http.Request) (map[string]any, error) {
 		return map[string]any{
 			"status":  "online",
@@ -147,7 +111,7 @@ func main() {
 		}, nil
 	}))
 
-	// ─── طبقات الـ middleware: CORS ثم حماية التوكن (نفس ترتيب بايثون) ─
+	// ─── طبقات الـ middleware: CORS ثم حماية التوكن  ─
 	internalToken := os.Getenv("INTERNAL_TOKEN")
 	var handler http.Handler = mux
 	handler = middleware.Auth(internalToken, handler)

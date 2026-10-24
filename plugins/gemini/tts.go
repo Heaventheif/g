@@ -106,9 +106,9 @@ func callPiperTTS(ctx context.Context, text string) ([]byte, error) {
 	}
 	defer os.Remove(outPath)
 
-	cmd := exec.CommandContext(ctx, "python3", "-m", "piper",
-		"--data-dir", piperDataDir,
-		"--model", piperVoice,
+	// ملف Piper التنفيذي المستقل (C++، بلا Python) — يُثبَّت في Dockerfile.
+	cmd := exec.CommandContext(ctx, "piper",
+		"--model", piperDataDir+"/"+piperVoice+".onnx",
 		"--output_file", outPath,
 	)
 	cmd.Stdin = strings.NewReader(text)
