@@ -16,7 +16,7 @@ pinned: false
 
 ```
 Render ──► Go (g) ── المنفذ 7860
-             ├─ gemini, groq, comic, novel, sub, manga-bridge, pinterest, ping
+             ├─ gemini, groq, comic, novel, manga-bridge, pinterest, ping
              └─ chess  (POST /process_move)
                   ├─ position.go : قواعد الشطرنج (توليد النقلات، FEN، نهاية اللعبة)
                   ├─ engine.go   : مجمّع عمليات Stockfish الدائمة + Lichess Cloud Eval
@@ -40,12 +40,38 @@ Render ──► Go (g) ── المنفذ 7860
 ### الاختبار
 
 ```bash
-go test ./plugins/chess        # perft + مطابقة python-chess (testdata/positions.json) + الرسم + البوت
+go test ./plugins/chess        # perft + مطابقة python-chess (testdata/positions/*.json) + الرسم + البوت
 ```
 
 ## إضافة خدمة جديدة
 
 حزمة جديدة تحت `plugins/` تلتزم بعقد `plugins.Service` (`Name()` + `Routes()`) + سطر واحد في `services()` داخل `main.go` وسطر في `descriptions`. راجع `plugins/ping` كمثال.
+
+## خريطة الملفات
+
+كل حزمة مقسّمة حسب المسؤولية (اسم الملف يدل على محتواه، وأول سطر فيه يشرحه):
+
+| الحزمة | الملفات |
+|---|---|
+| `internal/browser` | `browser.go` (إعداد/User-Agent) · `stealth.go` · `behavior.go` · `cloudflare.go` · `scrape.go` |
+| `plugins/chess` | `chess.go` (المسار) · `position.go` · `moves.go` · `attacks.go` · `outcome.go` · `engine.go` · `lichess.go` · `cache.go` · `render.go` · `png.go` · `config.go` |
+| `plugins/mangabridge` | `mangabridge.go` (المسارات) · `job.go` · `scraper.go` · `images.go` · `validation.go` |
+| `plugins/pinterest` | `pinterest.go` · `scraper.go` · `transform.go` · `ferdev.go` |
+| `plugins/novel` | `novel.go` · `cache.go` · `html.go` · `extract.go` · `fetch.go` · `slug.go` · `novelfull.go` |
+| `plugins/groq` | `groq.go` · `chat.go` · `vision.go` · `search.go` · `tts.go` · `attachment.go` · `stt.go` |
+| `plugins/gemini` | `gemini.go` · `constants.go` · `fallback.go` · `vision.go` · `vision_call.go` · `stt.go` · `tts.go` |
+
+## التطوير والصيانة
+
+```bash
+make check     # تنسيق + vet + اختبارات (نفس بوابة CI)
+make run       # تشغيل محلي
+```
+
+- **قاعدة الحزم:** كل خدمة حزمة مستقلة تحت `plugins/` لا تعرف غيرها؛ المشترك فقط في `internal/` (`httpx` للـ handlers، `strutil` للنصوص، `netguard` لجلب الروابط الآمن، `keyrotate` لتدوير المفاتيح، `session` للجلسات).
+- **النصوص:** استعمل `strutil.Truncate` لا `s[:n]` (الأخيرة تقطع الحروف العربية في منتصفها).
+- **الإيقاف السليم:** إن كانت خدمتك تملك موارد (عمليات، اتصالات) فأضف `Close() error` — يستدعيه `main` تلقائياً عند SIGTERM عبر `io.Closer` دون تغيير عقد `plugins.Service`.
+- **النشر:** كل push على `main` يشغّل `test` أولاً، ولا يُدفع إلى HF إلا إن نجح.
 
 ## متغيرات البيئة العامة
 

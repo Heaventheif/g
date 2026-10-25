@@ -13,30 +13,16 @@
 package mangabridge
 
 import (
-	"context"
-	cryptorand "crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
-	"golang.org/x/text/unicode/norm"
-
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/chromedp"
-
-	"sunkenbot/internal/browser"
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/plugins"
 )
@@ -49,36 +35,6 @@ const (
 	maxMangaImages     = 300
 	maxMangaImageBytes = 16 * 1024 * 1024
 )
-
-var (
-	mangaSlugInvalidRe = regexp.MustCompile(`[^a-z0-9]+`)
-	mangaChapterRe     = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
-	jobIDRe            = regexp.MustCompile(`^[a-f0-9]{32}$`)
-)
-
-// ─── حالة الـ job في الذاكرة (تقابل جدول jobs في SQLite) ────────────
-
-type jobStatus string
-
-const (
-	statusPending jobStatus = "pending"
-	statusRunning jobStatus = "running"
-	statusDone    jobStatus = "done"
-	statusError   jobStatus = "error"
-)
-
-type mangaJob struct {
-	ID           string
-	Manga        string
-	Chapter      string
-	Status       jobStatus
-	ChapterTitle string
-	ChapterURL   string
-	ImageCount   int
-	Error        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-}
 
 // Service يحمل حالة الـ jobs في الذاكرة كحقلين صريحين (بدل jobsMu/jobs
 // كمتغيرات حزمة عامة سابقاً) — هذا بالضبط النمط الممنوع صراحة في القيود
@@ -115,389 +71,15 @@ func (s *Service) Routes() []plugins.Route {
 	}
 }
 
-func (s *Service) createJob(manga, chapter string) *mangaJob {
-	id := randomHex(16)
-	now := time.Now()
-	j := &mangaJob{ID: id, Manga: manga, Chapter: chapter, Status: statusPending, CreatedAt: now, UpdatedAt: now}
-	s.jobsMu.Lock()
-	s.jobs[id] = j
-	s.jobsMu.Unlock()
-	return j
-}
-
-func (s *Service) getJob(id string) (*mangaJob, bool) {
-	s.jobsMu.Lock()
-	defer s.jobsMu.Unlock()
-	j, ok := s.jobs[id]
-	return j, ok
-}
-
-func (s *Service) updateJob(id string, mutate func(*mangaJob)) {
-	s.jobsMu.Lock()
-	defer s.jobsMu.Unlock()
-	if j, ok := s.jobs[id]; ok {
-		mutate(j)
-		j.UpdatedAt = time.Now()
-	}
-}
-
-// cleanupOldJobs يقابل _cleanup_old_jobs في بايثون — يمسح الـ jobs
-// وصورها الأقدم من JOB_TTL_SECONDS، يُستدعى مع كل job جديدة.
-func (s *Service) cleanupOldJobs() {
-	cutoff := time.Now().Add(-jobTTL)
-	s.jobsMu.Lock()
-	var expired []string
-	for id, j := range s.jobs {
-		if j.CreatedAt.Before(cutoff) {
-			expired = append(expired, id)
-			delete(s.jobs, id)
-		}
-	}
-	s.jobsMu.Unlock()
-
-	for _, id := range expired {
-		_ = os.RemoveAll(filepath.Join(imagesSubdir, id))
-	}
-}
-
-// ─── محرّك الكشط (chromedp/CDP خالص Go — بدل Node.js/Playwright سابقاً) ─
-//
-// ملاحظة صادقة: يحتاج Chromium مثبَّتاً فعلياً على الجهاز الذي يعمل عليه
-// هذا الثنائي (راجع الـ Dockerfile). لم يتسنَّ اختبار هذا بمتصفح حقيقي
-// في بيئة تطوير هذا المشروع (تحميل ثنائي Chromium نفسه محجوب شبكياً
-// هناك) — لكن حزمة chromedp نفسها بُنيت واختُبرت فعلياً هنا (راجع
-// internal/browser). حتى نسخة بايثون الأصلية توثّق أن Cloudflare قد
-// يحجب هذا بغض النظر عن الأداة، فهذا الجزء هش حتى في أفضل الأحوال.
-
-const (
-	mangaBaseURL          = "https://3asq.online"
-	mangaCFChallengeWaitS = 15
-	mangaUserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-		"(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
-func slugify(name string) string {
-	name = strings.ToLower(strings.NewReplacer("'", "", "’", "").Replace(strings.TrimSpace(name)))
-	decomposed := norm.NFD.String(name)
-	var asciiBase strings.Builder
-	for _, r := range decomposed {
-		if !unicode.Is(unicode.Mn, r) {
-			asciiBase.WriteRune(r)
-		}
-	}
-	name = asciiBase.String()
-	return strings.Trim(mangaSlugInvalidRe.ReplaceAllString(name, "-"), "-")
-}
-
-func validChapterNumber(chapter string) bool {
-	if len(chapter) == 0 || len(chapter) > 16 || !mangaChapterRe.MatchString(chapter) {
-		return false
-	}
-	n, err := strconv.ParseFloat(chapter, 64)
-	return err == nil && n > 0 && n <= 100000
-}
-
-// waitForCloudflareTitle يقابل waitForCloudflare في manga_scraper.js
-// السابق: يفحص عنوان الصفحة كل ثانية حتى deadline، بحثاً عن زوال
-// "Just a moment" من العنوان.
-func waitForCloudflareTitle(ctx context.Context, maxWaitS int) bool {
-	for range maxWaitS {
-		var title string
-		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		err := chromedp.Run(checkCtx, chromedp.Title(&title))
-		cancel()
-		if err == nil && !strings.Contains(title, "Just a moment") {
-			return true
-		}
-		sleepCtx, sleepCancel := context.WithTimeout(ctx, 2*time.Second)
-		_ = chromedp.Run(sleepCtx, chromedp.Sleep(1*time.Second))
-		sleepCancel()
-	}
-	var title string
-	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	err := chromedp.Run(checkCtx, chromedp.Title(&title))
-	cancel()
-	return err == nil && !strings.Contains(title, "Just a moment")
-}
-
-const extractImgSrcsJS = `
-(() => {
-    const imgs = document.querySelectorAll('.page-break img, .reading-content img');
-    const out = [];
-    const seen = new Set();
-    for (const img of imgs) {
-        const src = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.getAttribute('src');
-        if (!src || !src.trim()) continue;
-        try {
-            const absolute = new URL(src.trim(), document.baseURI);
-            if (absolute.protocol !== 'https:' || seen.has(absolute.href)) continue;
-            seen.add(absolute.href);
-            out.push(absolute.href);
-            if (out.length >= 300) break;
-        } catch (_) {}
-    }
-    return out;
-})()
-`
-
-const firstSearchResultHrefJS = `
-(() => {
-    const a = document.querySelector('.page-item-detail .item-thumb a');
-    return a ? (a.getAttribute('href') || '') : '';
-})()
-`
-
-type scrapedChapter struct {
-	title string
-	url   string
-	srcs  []string
-}
-
-// scrapeChapterDOM يقابل الجزء الأول (بلا تحميل الصور) من scrapeChapter
-// في manga_scraper.js السابق: تنقّل، انتظار Cloudflare، استخراج روابط
-// الصور، ومع منطق fallback البحث لو لم توجد صور مباشرة.
-func scrapeChapterDOM(ctx context.Context, manga, chapter string) (scrapedChapter, error) {
-	slug := slugify(manga)
-	chapterURL := fmt.Sprintf("%s/manga/%s/%s/", mangaBaseURL, slug, chapter)
-
-	navCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	err := chromedp.Run(navCtx, chromedp.Navigate(chapterURL))
-	cancel()
-	if err != nil {
-		return scrapedChapter{}, fmt.Errorf("تعذّر فتح صفحة الفصل: %w", err)
-	}
-	waitForCloudflareTitle(ctx, mangaCFChallengeWaitS)
-
-	var srcs []string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(extractImgSrcsJS, &srcs)); err != nil {
-		return scrapedChapter{}, fmt.Errorf("فشل استخراج روابط الصور: %w", err)
-	}
-
-	if len(srcs) == 0 {
-		// لا صور — جرّب البحث (نفس منطق manga2.js الأصلي)
-		searchURL := fmt.Sprintf("%s/?s=%s", mangaBaseURL, url.QueryEscape(manga))
-		searchCtx, searchCancel := context.WithTimeout(ctx, 30*time.Second)
-		err := chromedp.Run(searchCtx, chromedp.Navigate(searchURL))
-		searchCancel()
-		if err != nil {
-			return scrapedChapter{}, fmt.Errorf("تعذّر فتح صفحة البحث: %w", err)
-		}
-		waitForCloudflareTitle(ctx, mangaCFChallengeWaitS)
-
-		var href string
-		if err := chromedp.Run(ctx, chromedp.Evaluate(firstSearchResultHrefJS, &href)); err != nil || href == "" {
-			return scrapedChapter{title: "", url: "", srcs: nil}, nil
-		}
-
-		retryURL := strings.TrimRight(href, "/") + "/" + chapter + "/"
-		retryCtx, retryCancel := context.WithTimeout(ctx, 45*time.Second)
-		err = chromedp.Run(retryCtx, chromedp.Navigate(retryURL))
-		retryCancel()
-		if err != nil {
-			return scrapedChapter{}, fmt.Errorf("تعذّر فتح رابط الفصل البديل: %w", err)
-		}
-		waitForCloudflareTitle(ctx, mangaCFChallengeWaitS)
-
-		if err := chromedp.Run(ctx, chromedp.Evaluate(extractImgSrcsJS, &srcs)); err != nil {
-			return scrapedChapter{}, fmt.Errorf("فشل استخراج روابط الصور (بعد البحث): %w", err)
-		}
-	}
-
-	var title, finalURL string
-	_ = chromedp.Run(ctx, chromedp.Title(&title), chromedp.Location(&finalURL))
-
-	if len(srcs) == 0 {
-		return scrapedChapter{title: title, url: finalURL, srcs: nil}, nil
-	}
-	return scrapedChapter{title: title, url: finalURL, srcs: srcs}, nil
-}
-
-// browserCookieHeader يستخرج كل الكوكيز الحالية في جلسة chromedp (تشمل
-// أي cf_clearance حصلت عليه الجلسة من اجتياز تحدي Cloudflare) ويبنيها
-// كسلسلة رأس Cookie قياسية — يُستخدم لاحقاً في fetchImages ليطلب Go
-// نفس الصور بنفس هوية الجلسة التي اجتازت التحدي، بدل أن يبدأ من صفر
-// ويصطدم بالتحدي من جديد (نفس أثر مشاركة browser context بين page.goto
-// وcontext.request.get في Playwright/Node السابق).
-func browserCookieHeader(ctx context.Context, forURL string) (string, error) {
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
-		return "", err
-	}
-	var cookies []*network.Cookie
-	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		var err error
-		cookies, err = network.GetCookies().WithURLs([]string{forURL}).Do(ctx)
-		return err
-	})); err != nil {
-		return "", err
-	}
-	parts := make([]string, 0, len(cookies))
-	for _, c := range cookies {
-		parts = append(parts, c.Name+"="+c.Value)
-	}
-	return strings.Join(parts, "; "), nil
-}
-
-// fetchImages يقابل حلقة تحميل الصور في scrapeChapter (manga_scraper.js
-// السابق): يطلب كل رابط بـ Referer=chapterURL ومحاولتين عند الفشل، لكن
-// عبر http.Client عادي في Go بدل context.request.get في Playwright —
-// مع نفس الكوكيز (راجع browserCookieHeader) ونفس الـ User-Agent حتى
-// يبقى الخادم البعيد يرى نفس الهوية التي اجتازت تحدي Cloudflare.
-func fetchImages(ctx context.Context, srcs []string, referer, cookieHeader string) [][]byte {
-	if len(srcs) > maxMangaImages {
-		srcs = srcs[:maxMangaImages]
-	}
-	client := &http.Client{Timeout: 20 * time.Second}
-	buffers := make([][]byte, 0, len(srcs))
-
-	for _, src := range srcs {
-		var body []byte
-		for attempt := range 2 {
-			reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, src, nil)
-			if err == nil {
-				req.Header.Set("Referer", referer)
-				req.Header.Set("User-Agent", mangaUserAgent)
-				if cookieHeader != "" {
-					req.Header.Set("Cookie", cookieHeader)
-				}
-				resp, doErr := client.Do(req)
-				if doErr == nil {
-					if resp.StatusCode == http.StatusOK {
-						b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxMangaImageBytes+1))
-						resp.Body.Close()
-						if readErr == nil && len(b) <= maxMangaImageBytes && isImagePayload(b) {
-							body = b
-							cancel()
-							break
-						}
-					} else {
-						resp.Body.Close()
-					}
-				}
-			}
-			cancel()
-			if attempt == 0 {
-				time.Sleep(1 * time.Second)
-			}
-		}
-		if body != nil {
-			buffers = append(buffers, body)
-		}
-	}
-	return buffers
-}
-
-// scrapeChapter يقابل الدالة بنفس الاسم في manga_bridge.py الأصلي
-// (وscrapeChapter في manga_scraper.js السابق قبل حذفه): تشغّل جلسة
-// Chromium مخصصة كاملة، تكشط DOM صفحة الفصل، ثم تُحمِّل الصور
-// وتكتبها بترتيب الصفحات وامتداد يطابق نوع الصورة داخل outputDir.
-func (s *Service) scrapeChapter(ctx context.Context, manga, chapter, outputDir string) (title, chapterURL string, imageCount int, err error) {
-	// حارس التزامن: يحد عدد نسخ Chromium المتشغّلة معاً.
-	s.sem <- struct{}{}
-	defer func() { <-s.sem }()
-
-	ctxTimeout, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
-	bctx, bcancel, err := browser.New(ctxTimeout, browser.Options{
-		UserAgent:   mangaUserAgent,
-		ExecPathEnv: "MANGA_CHROMIUM_PATH",
-	})
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer bcancel()
-
-	result, err := scrapeChapterDOM(bctx, manga, chapter)
-	if err != nil {
-		return "", "", 0, err
-	}
-	if len(result.srcs) == 0 {
-		return result.title, result.url, 0, nil
-	}
-
-	cookieHeader, _ := browserCookieHeader(bctx, result.url)
-	buffers := fetchImages(ctxTimeout, result.srcs, result.url, cookieHeader)
-	if len(buffers) == 0 {
-		return result.title, result.url, 0, nil
-	}
-
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return "", "", 0, fmt.Errorf("تعذّر إنشاء مجلد الصور: %w", err)
-	}
-	for idx, buf := range buffers {
-		fpath := filepath.Join(outputDir, fmt.Sprintf("%d%s", idx, imageFileExtension(buf)))
-		if err := os.WriteFile(fpath, buf, 0o644); err != nil {
-			return "", "", 0, fmt.Errorf("تعذّر كتابة الصورة %d: %w", idx, err)
-		}
-	}
-
-	return result.title, result.url, len(buffers), nil
-}
-
-func imageFileExtension(data []byte) string {
-	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
-		return ".webp"
-	}
-	if len(data) >= 12 && string(data[4:8]) == "ftyp" && (string(data[8:12]) == "avif" || string(data[8:12]) == "avis") {
-		return ".avif"
-	}
-	switch http.DetectContentType(data) {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	case "image/avif":
-		return ".avif"
-	case "image/bmp":
-		return ".bmp"
-	case "image/tiff":
-		return ".tif"
-	default:
-		return ".img"
-	}
-}
-
-func isImagePayload(data []byte) bool {
-	return len(data) > 0 && imageFileExtension(data) != ".img"
-}
-
-// ─── تشغيل الـ job في الخلفية (goroutine تقابل BackgroundTasks) ─────
-
-func (s *Service) runJob(jobID, manga, chapter string) {
-	s.updateJob(jobID, func(j *mangaJob) { j.Status = statusRunning })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
-	defer cancel()
-
-	jobDir := filepath.Join(imagesSubdir, jobID)
-	title, u, imageCount, err := s.scrapeChapter(ctx, manga, chapter, jobDir)
-	if err != nil || imageCount == 0 {
-		reason := "لم يتم العثور على صور — إما اسم/فصل غير صحيح، أو تحدي Cloudflare لم يُحل من IP الخادم."
-		if err != nil {
-			reason = err.Error()
-		}
-		s.updateJob(jobID, func(j *mangaJob) {
-			j.Status = statusError
-			j.Error = truncate(reason, 500)
-		})
-		return
-	}
-
-	s.updateJob(jobID, func(j *mangaJob) {
-		j.Status = statusDone
-		j.ChapterTitle = title
-		j.ChapterURL = u
-		j.ImageCount = imageCount
-	})
-	log.Printf("[manga-bridge] job %s اكتملت — %d صورة", jobID, imageCount)
-}
-
 // ─── HTTP handlers ───────────────────────────────────────────────
+
+// maxCreateJobBodyBytes: جسم الطلب اسم (≤120) + رقم فصل فقط، فـ 16KB سخي جداً.
+const maxCreateJobBodyBytes = 16 << 10
+
+type createJobBody struct {
+	Manga   string `json:"manga"`
+	Chapter string `json:"chapter"`
+}
 
 type createJobResult struct {
 	JobID  string `json:"job_id"`
@@ -507,11 +89,14 @@ type createJobResult struct {
 func (s *Service) handleCreateJob(r *http.Request) (createJobResult, error) {
 	s.cleanupOldJobs()
 
-	var body struct {
-		Manga   string `json:"manga"`
-		Chapter string `json:"chapter"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	body, err := httpx.DecodeLimit[createJobBody](r, maxCreateJobBodyBytes)
+	if err != nil {
+		if httpx.IsTooLarge(err) {
+			return createJobResult{}, &httpx.HTTPError{
+				Code: http.StatusRequestEntityTooLarge,
+				Body: map[string]any{"detail": "حجم الطلب كبير جداً"},
+			}
+		}
 		return createJobResult{}, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
 			Body: map[string]any{"detail": "طلب غير صالح"},
@@ -586,22 +171,4 @@ func (s *Service) handleGetJobImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpx.JSON(w, http.StatusNotFound, map[string]any{"detail": "الصورة غير موجودة"})
-}
-
-// ─── أدوات مساعدة ──────────────────────────────────────────────────
-
-func randomHex(n int) string {
-	buf := make([]byte, n/2+1)
-	if _, err := cryptorand.Read(buf); err != nil {
-		// احتياط شديد الندرة فقط لو فشل مصدر العشوائية بالنظام
-		return fmt.Sprintf("%x", time.Now().UnixNano())[:n]
-	}
-	return hex.EncodeToString(buf)[:n]
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }

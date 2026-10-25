@@ -1,5 +1,5 @@
 // Package strutil يوفّر دوال مساعدة للنصوص مشتركة بين كل الـ plugins —
-// بدل نسخها في كل حزمة (كانت truncate مكررة في 9 ملفات، وstringOr في 3).
+// بدل نسخها في كل حزمة (كانت truncate مكررة في 6 ملفات، وstringOr في 3، وfirstNonEmpty في ملف).
 //
 // truncate تعمل بالأحرف (runes) لا بالبايتات، مما يمنع قطع النصوص العربية
 // أو أي نص Unicode متعدد البايتات في منتصف حرف.
@@ -23,4 +23,14 @@ func StringOr(v any, def string) string {
 		return s
 	}
 	return def
+}
+
+// FirstNonEmpty يعيد أول قيمة غير فارغة، أو "" إن كانت كلها فارغة.
+func FirstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

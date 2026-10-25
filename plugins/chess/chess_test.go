@@ -20,6 +20,8 @@ func newTestService(t *testing.T) *Service {
 	t.Setenv("LICHESS_TIMEOUT_MS", "50")
 	s := newService()
 	s.lichess.url = "http://127.0.0.1:1/unused" // لا شبكة في الاختبارات
+	// لا تُترك عمليات Stockfish بعد الاختبار
+	t.Cleanup(s.pool.close)
 	return s
 }
 
@@ -173,17 +175,18 @@ func meanDiff(a, b image.Image) float64 {
 		for x := bd.Min.X; x < bd.Max.X; x++ {
 			r1, g1, b1, _ := a.At(x, y).RGBA()
 			r2, g2, b2, _ := b.At(x, y).RGBA()
-			sum += abs(int(r1>>8)-int(r2>>8)) + abs(int(g1>>8)-int(g2>>8)) + abs(int(b1>>8)-int(b2>>8))
+			sum += absDiff(r1>>8, r2>>8) + absDiff(g1>>8, g2>>8) + absDiff(b1>>8, b2>>8)
 		}
 	}
 	return sum / float64(bd.Dx()*bd.Dy()*3)
 }
 
-func abs(x int) float64 {
-	if x < 0 {
-		return float64(-x)
+// absDiff: |a-b| للقيم غير المُوقَّعة (بدون تحويل int وبدون اسم abs المضلِّل).
+func absDiff(a, b uint32) float64 {
+	if a > b {
+		return float64(a - b)
 	}
-	return float64(x)
+	return float64(b - a)
 }
 
 func BenchmarkRenderUncached(b *testing.B) {

@@ -14,6 +14,7 @@ import (
 
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/netguard"
+	"sunkenbot/internal/strutil"
 )
 
 const whisperModel = "whisper-large-v3"
@@ -25,16 +26,16 @@ func (s *Service) handleSTT(r *http.Request) (map[string]any, error) {
 	ctx := r.Context()
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": truncate(err.Error(), 200)}}
+		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": strutil.Truncate(err.Error(), 200)}}
 	}
 
 	att := parseAttachment(body["attachment"])
 	if att == nil {
 		att = &attachment{
 			Kind:        "audio",
-			URL:         stringOr(body["url"], ""),
-			Base64:      stringOr(body["base64"], ""),
-			ContentType: stringOr(body["contentType"], ""),
+			URL:         strutil.StringOr(body["url"], ""),
+			Base64:      strutil.StringOr(body["base64"], ""),
+			ContentType: strutil.StringOr(body["contentType"], ""),
 		}
 	}
 	if att.URL == "" && att.Base64 == "" {
@@ -58,14 +59,14 @@ func (s *Service) handleSTT(r *http.Request) (map[string]any, error) {
 		}
 	}
 	if err != nil {
-		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": "تعذّر قراءة الملف الصوتي: " + truncate(err.Error(), 180)}}
+		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": "تعذّر قراءة الملف الصوتي: " + strutil.Truncate(err.Error(), 180)}}
 	}
 
-	language := stringOr(body["language"], "ar")
-	responseFormat := stringOr(body["response_format"], "text")
+	language := strutil.StringOr(body["language"], "ar")
+	responseFormat := strutil.StringOr(body["response_format"], "text")
 	text, err := s.transcribeAudio(ctx, raw, guessMime(att.URL, raw), language, responseFormat)
 	if err != nil {
-		return nil, &httpx.HTTPError{Code: http.StatusServiceUnavailable, Body: map[string]any{"error": "فشل Groq STT بعد تجربة مفاتيح API المتاحة: " + truncate(err.Error(), 300)}}
+		return nil, &httpx.HTTPError{Code: http.StatusServiceUnavailable, Body: map[string]any{"error": "فشل Groq STT بعد تجربة مفاتيح API المتاحة: " + strutil.Truncate(err.Error(), 300)}}
 	}
 	return map[string]any{"text": text, "model": whisperModel, "provider": "groq-whisper"}, nil
 }
@@ -136,7 +137,7 @@ func (s *Service) transcribeAudio(ctx context.Context, audioRaw []byte, mime, la
 		}
 		if resp.StatusCode >= 400 {
 			return resp.StatusCode == http.StatusTooManyRequests,
-				fmt.Errorf("groq STT status %d: %s", resp.StatusCode, truncate(string(respBody), 250))
+				fmt.Errorf("groq STT status %d: %s", resp.StatusCode, strutil.Truncate(string(respBody), 250))
 		}
 		if responseFormat == "text" {
 			transcription = strings.TrimSpace(string(respBody))

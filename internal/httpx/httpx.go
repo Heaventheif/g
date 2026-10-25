@@ -35,10 +35,31 @@ func Error(w http.ResponseWriter, status int, msg string) {
 	JSON(w, status, map[string]string{"error": msg})
 }
 
+// DefaultMaxBodyBytes: الحد الافتراضي لجسم JSON في Decode/WrapJSON. المسارات التي
+// تحمل بيانات ثنائية مضمّنة (base64: صوت/صور) تستخدم DecodeLimit/WrapJSONLimit
+// بحد أكبر صريح، والمسارات الصغيرة جداً بحد أصغر.
+const DefaultMaxBodyBytes int64 = 10 << 20
+
+// Decode يفكّ جسم JSON بحد DefaultMaxBodyBytes.
 func Decode[T any](r *http.Request) (T, error) {
+	return DecodeLimit[T](r, DefaultMaxBodyBytes)
+}
+
+// DecodeLimit يفكّ جسم JSON ويقرأ على الأكثر maxBytes (+1 للكشف عن التجاوز) —
+// الجسم الأكبر يُقطع بدل أن يُحمَّل كاملاً في الذاكرة. استُخدم w=nil عمداً في
+// MaxBytesReader: Handle لا يمرّر ResponseWriter للـ handlers؛ والمكتبة تتحمّل nil
+// (تُهمل فقط ضبط Connection: close). تجاوز الحد يُرجع *http.MaxBytesError (راجع IsTooLarge).
+func DecodeLimit[T any](r *http.Request, maxBytes int64) (T, error) {
 	var v T
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
 	err := json.NewDecoder(r.Body).Decode(&v)
 	return v, err
+}
+
+// IsTooLarge يُخبر إن كان الخطأ ناتجاً عن تجاوز حد حجم الجسم.
+func IsTooLarge(err error) bool {
+	var mbe *http.MaxBytesError
+	return errors.As(err, &mbe)
 }
 
 // Handle هي البدائية الوحيدة والعامة لكل route — تعمل بلا فرق لأي شكل:
@@ -75,10 +96,21 @@ func Handle[Res any](h func(r *http.Request) (Res, error)) http.HandlerFunc {
 // أو 400 مقابل 500 كما حدث تاريخياً بين التسعة القدامى — تلك الاختلافات
 // مجمَّدة فقط في القديم (راجع الخدمات المرحَّلة)، ومحظورة في أي شيء جديد.
 func WrapJSON[Req, Res any](h func(ctx context.Context, req Req) (Res, error)) http.HandlerFunc {
+	return WrapJSONLimit(DefaultMaxBodyBytes, h)
+}
+
+// WrapJSONLimit مثل WrapJSON بحد صريح لحجم الجسم (413 عند التجاوز، 400 لغير ذلك).
+func WrapJSONLimit[Req, Res any](maxBytes int64, h func(ctx context.Context, req Req) (Res, error)) http.HandlerFunc {
 	return Handle(func(r *http.Request) (Res, error) {
-		req, err := Decode[Req](r)
+		req, err := DecodeLimit[Req](r, maxBytes)
 		if err != nil {
 			var zero Res
+			if IsTooLarge(err) {
+				return zero, &HTTPError{
+					Code: http.StatusRequestEntityTooLarge,
+					Body: map[string]string{"error": "request body too large"},
+				}
+			}
 			return zero, &HTTPError{
 				Code: http.StatusBadRequest,
 				Body: map[string]string{"error": "invalid request body"},

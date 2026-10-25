@@ -3,6 +3,7 @@ package chess
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -41,42 +42,59 @@ func TestPerft(t *testing.T) {
 	}
 }
 
-// مقارنة كاملة مع python-chess على آلاف المواضع: النقلات القانونية، FEN، النتيجة.
+// مقارنة كاملة مع python-chess: النقلات القانونية، FEN، النتيجة.
+// المواضع موزّعة على ملفات حسب النوع في testdata/positions/ (opening, midgame,
+// endgame, castling, promotion, gameover). مع -short تُتخطى الملفات الكبيرة.
 func TestAgainstPythonChess(t *testing.T) {
-	raw, err := os.ReadFile("testdata/positions.json")
-	if err != nil {
-		t.Fatal(err)
+	files, err := filepath.Glob("testdata/positions/*.json")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("لا ملفات مواضع في testdata/positions (%v)", err)
 	}
-	var rows []struct {
-		FEN    string   `json:"fen"`
-		Moves  []string `json:"moves"`
-		Over   bool     `json:"over"`
-		Result string   `json:"result"`
+	total := 0
+	defer func() { t.Logf("المجموع: %d موضعاً", total) }()
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.Base(file), ".json")
+		t.Run(name, func(t *testing.T) {
+			if testing.Short() && (name == "midgame" || name == "endgame") {
+				t.Skip("-short")
+			}
+			raw, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []struct {
+				FEN    string   `json:"fen"`
+				Moves  []string `json:"moves"`
+				Over   bool     `json:"over"`
+				Result string   `json:"result"`
+			}
+			if err := json.Unmarshal(raw, &rows); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range rows {
+				p := mustFEN(t, r.FEN)
+				var got []string
+				for _, m := range p.LegalMoves() {
+					got = append(got, m.UCI())
+				}
+				sort.Strings(got)
+				if strings.Join(got, " ") != strings.Join(r.Moves, " ") {
+					t.Fatalf("نقلات مختلفة لـ %s\n go: %v\n py: %v", r.FEN, got, r.Moves)
+				}
+				if p.FEN() != r.FEN {
+					t.Fatalf("FEN مختلف:\n go: %s\n py: %s", p.FEN(), r.FEN)
+				}
+				if p.GameOver() != r.Over {
+					t.Fatalf("game_over مختلف لـ %s: go=%v py=%v", r.FEN, p.GameOver(), r.Over)
+				}
+				if r.Over && p.Outcome() != r.Result {
+					t.Fatalf("النتيجة مختلفة لـ %s: go=%s py=%s", r.FEN, p.Outcome(), r.Result)
+				}
+			}
+			t.Logf("%s: %d موضعاً طابقت python-chess", name, len(rows))
+			total += len(rows)
+		})
 	}
-	if err := json.Unmarshal(raw, &rows); err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range rows {
-		p := mustFEN(t, r.FEN)
-		var got []string
-		for _, m := range p.LegalMoves() {
-			got = append(got, m.UCI())
-		}
-		sort.Strings(got)
-		if strings.Join(got, " ") != strings.Join(r.Moves, " ") {
-			t.Fatalf("نقلات مختلفة لـ %s\n go: %v\n py: %v", r.FEN, got, r.Moves)
-		}
-		if p.FEN() != r.FEN {
-			t.Fatalf("FEN مختلف:\n go: %s\n py: %s", p.FEN(), r.FEN)
-		}
-		if p.GameOver() != r.Over {
-			t.Fatalf("game_over مختلف لـ %s: go=%v py=%v", r.FEN, p.GameOver(), r.Over)
-		}
-		if r.Over && p.Outcome() != r.Result {
-			t.Fatalf("النتيجة مختلفة لـ %s: go=%s py=%s", r.FEN, p.Outcome(), r.Result)
-		}
-	}
-	t.Logf("%d موضعاً طابقت python-chess", len(rows))
 }
 
 func TestApplyMatchesFENRoundTrip(t *testing.T) {

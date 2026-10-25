@@ -7,8 +7,32 @@ on:
   workflow_dispatch:  # أو يدوياً من واجهة GitHub
 
 jobs:
+  # ─── بوابة الجودة: لا يُنشر شيء إلى HF إلا إذا نجح التنسيق والفحص والاختبارات ───
+  test:
+    name: Format, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Stockfish مطلوب لاختبار البوت الحقيقي في plugins/chess (يُتخطى تلقائياً إن غاب)
+      - name: Install stockfish
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends stockfish
+      # يفشل إن كان go.mod/go.sum غير مرتَّبين — البناء في Docker بـ -mod=readonly
+      # ولا يُصلح شيئاً بنفسه (Go >= 1.23 لـ -diff).
+      - name: go mod tidy (no diff)
+        run: go mod tidy -diff
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: go vet
+        run: go vet ./... && go vet -tags postgres ./...
+      - name: go test
+        run: go test -race ./...
+
   sync-to-hf:
     name: Push to HuggingFace Space
+    needs: test
     runs-on: ubuntu-latest
 
     steps:

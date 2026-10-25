@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"sunkenbot/internal/httpx"
+	"sunkenbot/internal/strutil"
 	"sunkenbot/plugins/groq"
 )
 
@@ -119,7 +120,7 @@ func callPiperTTS(ctx context.Context, text string) ([]byte, error) {
 		if detail == "" {
 			detail = err.Error()
 		}
-		return nil, fmt.Errorf("Piper TTS فشل: %s", truncate(detail, 350))
+		return nil, fmt.Errorf("Piper TTS فشل: %s", strutil.Truncate(detail, 350))
 	}
 	audio, err := os.ReadFile(outPath)
 	if err != nil {
@@ -191,7 +192,7 @@ func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, e
 
 	audio, usedVoice, err := callGroqThenPiper(ctx, text, voice)
 	if err != nil {
-		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusServiceUnavailable, Body: map[string]any{"error": truncate(err.Error(), 450)}}
+		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusServiceUnavailable, Body: map[string]any{"error": strutil.Truncate(err.Error(), 450)}}
 	}
 	ttsToCache(cacheKey, audio, usedVoice)
 	return TTSResponse{AudioBase64: base64.StdEncoding.EncodeToString(audio), MimeType: "audio/wav", Voice: usedVoice, Cached: false}, nil

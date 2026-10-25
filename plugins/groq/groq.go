@@ -3,25 +3,20 @@
 package groq
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/keyrotate"
-	"sunkenbot/internal/netguard"
 	"sunkenbot/internal/plugins"
 	"sunkenbot/internal/session"
+	"sunkenbot/internal/strutil"
 )
 
 // Description defines the plugin description.
@@ -83,30 +78,6 @@ var groqKeys = sync.OnceValue(func() *keyrotate.Manager {
 	return keyrotate.FromEnv("GROQ_API_KEY")
 })
 
-// attachment represents incoming file payloads (images, audio, video).
-type attachment struct {
-	Kind        string `json:"kind"`
-	URL         string `json:"url"`
-	Base64      string `json:"base64"`
-	ContentType string `json:"contentType"`
-	Model       string `json:"model"`
-}
-
-// parseAttachment safely extracts attachment data from raw JSON input.
-func parseAttachment(raw any) *attachment {
-	obj, ok := raw.(map[string]any)
-	if !ok {
-		return nil
-	}
-	return &attachment{
-		Kind:        stringOr(obj["kind"], ""),
-		URL:         stringOr(obj["url"], ""),
-		Base64:      stringOr(obj["base64"], ""),
-		ContentType: stringOr(obj["contentType"], ""),
-		Model:       stringOr(obj["model"], ""),
-	}
-}
-
 // handleGroq processes incoming HTTP POST requests to the /groq endpoint.
 func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 	ctx := r.Context()
@@ -115,7 +86,7 @@ func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
-			Body: map[string]any{"error": truncate(err.Error(), 200)},
+			Body: map[string]any{"error": strutil.Truncate(err.Error(), 200)},
 		}
 	}
 
@@ -140,7 +111,7 @@ func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 
 	att := parseAttachment(body["attachment"])
 	last := messages[len(messages)-1]
-	prompt := strings.TrimSpace(stringOr(body["prompt"], last.Content))
+	prompt := strings.TrimSpace(strutil.StringOr(body["prompt"], last.Content))
 
 	// Use Groq's current built-in browser_search tool when explicitly requested.
 	var reply, provider string
@@ -155,7 +126,7 @@ func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 	if err != nil {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusServiceUnavailable,
-			Body: map[string]any{"error": "فشلت خوادم Groq: " + truncate(err.Error(), 100)},
+			Body: map[string]any{"error": "فشلت خوادم Groq: " + strutil.Truncate(err.Error(), 100)},
 		}
 	}
 
@@ -165,7 +136,7 @@ func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 			result["audio"] = audioB64
 			result["audio_format"] = "wav"
 		} else {
-			result["tts_error"] = truncate(terr.Error(), 150)
+			result["tts_error"] = strutil.Truncate(terr.Error(), 150)
 		}
 	}
 	return result, nil
@@ -173,9 +144,9 @@ func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 
 // handleSessionMode manages chat history sessions and state clearing.
 func (s *Service) handleSessionMode(ctx context.Context, body map[string]any) (map[string]any, error) {
-	threadID := stringOr(body["thread_id"], "default")
-	senderName := stringOr(body["sender_name"], "مستخدم")
-	prompt := strings.TrimSpace(stringOr(body["prompt"], ""))
+	threadID := strutil.StringOr(body["thread_id"], "default")
+	senderName := strutil.StringOr(body["sender_name"], "مستخدم")
+	prompt := strings.TrimSpace(strutil.StringOr(body["prompt"], ""))
 	doClear, _ := body["clear"].(bool)
 	att := parseAttachment(body["attachment"])
 	webSearch := boolOr(body["web_search"])
@@ -206,7 +177,7 @@ func (s *Service) handleSessionMode(ctx context.Context, body map[string]any) (m
 	if err != nil {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusServiceUnavailable,
-			Body: map[string]any{"error": "فشلت خوادم Groq: " + truncate(err.Error(), 100)},
+			Body: map[string]any{"error": "فشلت خوادم Groq: " + strutil.Truncate(err.Error(), 100)},
 		}
 	}
 
@@ -229,7 +200,7 @@ func (s *Service) handleSessionMode(ctx context.Context, body map[string]any) (m
 			result["audio"] = audioB64
 			result["audio_format"] = "wav"
 		} else {
-			result["tts_error"] = truncate(terr.Error(), 150)
+			result["tts_error"] = strutil.Truncate(terr.Error(), 150)
 		}
 	}
 	return result, nil
@@ -287,672 +258,4 @@ func (s *Service) dispatchAttachment(ctx context.Context, att *attachment, messa
 
 	reply, err = s.tryModels(ctx, textModels, messages, 30*time.Second)
 	return reply, "groq-text", err
-}
-
-// webSearch uses Groq's current server-side browser_search tool. Compound was
-// decommissioned on 2026-09-21; browser_search is its supported replacement.
-func (s *Service) webSearch(ctx context.Context, messages []session.Message, prompt string) (string, error) {
-	if strings.TrimSpace(prompt) == "" {
-		return "", fmt.Errorf("EMPTY_SEARCH_QUERY")
-	}
-	searchMessages := messages
-	if len(searchMessages) == 0 || searchMessages[len(searchMessages)-1].Role != "user" {
-		searchMessages = append(append([]session.Message{}, messages...), session.Message{Role: "user", Content: prompt})
-	}
-	payload := map[string]any{
-		"model":                 textModels[0],
-		"messages":              toChatMessages(searchMessages),
-		"tools":                 []map[string]string{{"type": "browser_search"}},
-		"tool_choice":           "required",
-		"max_completion_tokens": 2048,
-		"temperature":           0.2,
-	}
-	mgr := groqKeys()
-	if mgr.Empty() {
-		return "", fmt.Errorf("NO_GROQ_KEY")
-	}
-	var reply string
-	err := mgr.Do(func(key string) (bool, error) {
-		r, status, e := s.postGroqChat(ctx, key, payload, 60*time.Second)
-		if e != nil {
-			return status == http.StatusTooManyRequests, e
-		}
-		reply = r
-		return false, nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return reply, nil
-}
-
-// tryModels iterates through a list of models in descending priority, and for each
-// model rotates through all available Groq keys (Round-Robin start point + automatic
-// switch-and-retry on 429) until one model/key combination succeeds.
-func (s *Service) tryModels(ctx context.Context, models []string, messages []session.Message, timeout time.Duration) (string, error) {
-	mgr := groqKeys()
-	if mgr.Empty() {
-		return "", fmt.Errorf("NO_GROQ_KEY")
-	}
-
-	var lastErr error
-	for _, model := range models {
-		payload := map[string]any{
-			"model":       model,
-			"messages":    toChatMessages(messages),
-			"max_tokens":  1024,
-			"temperature": 0.7,
-		}
-		var reply string
-		err := mgr.Do(func(key string) (bool, error) {
-			r, status, e := s.postGroqChat(ctx, key, payload, timeout)
-			if e != nil {
-				return status == http.StatusTooManyRequests, e
-			}
-			reply = r
-			return false, nil
-		})
-		if err == nil && reply != "" {
-			return reply, nil
-		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return "", lastErr
-	}
-	return "", fmt.Errorf("ALL_MODELS_FAILED")
-}
-
-const (
-	maxAttachmentBytes   = 20 * 1024 * 1024 // 20MB — حد Groq لجلب الروابط (URL)
-	maxBase64VisionBytes = 4 * 1024 * 1024  // 4MB  — حد Groq لصور base64 (يُعيد 413 إذا تجاوز)
-)
-
-// fetchBase64 securely downloads an attachment from a URL and converts it to Base64.
-func (s *Service) fetchBase64(ctx context.Context, url string) ([]byte, string, error) {
-	raw, err := netguard.SafeFetch(ctx, s.dlClient, url, maxAttachmentBytes)
-	if err != nil {
-		return nil, "", fmt.Errorf("رابط المرفق مرفوض أو تعذّر جلبه: %w", err)
-	}
-	return raw, base64.StdEncoding.EncodeToString(raw), nil
-}
-
-// guessMime determines the MIME type of a file based on its file extension or raw header bytes.
-func guessMime(url string, raw []byte) string {
-	low := strings.ToLower(strings.SplitN(url, "?", 2)[0])
-	switch {
-	case strings.HasSuffix(low, ".png"):
-		return "image/png"
-	case strings.HasSuffix(low, ".gif"):
-		return "image/gif"
-	case strings.HasSuffix(low, ".webp"):
-		return "image/webp"
-	case strings.HasSuffix(low, ".mp3"):
-		return "audio/mp3"
-	case strings.HasSuffix(low, ".m4a"):
-		return "audio/mp4"
-	case strings.HasSuffix(low, ".ogg"):
-		return "audio/ogg"
-	case strings.HasSuffix(low, ".wav"):
-		return "audio/wav"
-	case strings.HasSuffix(low, ".mp4"):
-		return "video/mp4"
-	}
-	switch {
-	case len(raw) >= 4 && bytes.Equal(raw[:4], []byte{0x89, 'P', 'N', 'G'}):
-		return "image/png"
-	case len(raw) >= 3 && string(raw[:3]) == "GIF":
-		return "image/gif"
-	case len(raw) >= 2 && raw[0] == 0xFF && raw[1] == 0xD8:
-		return "image/jpeg"
-	case len(raw) >= 4 && string(raw[:4]) == "RIFF":
-		return "audio/wav"
-	case len(raw) >= 3 && string(raw[:3]) == "ID3":
-		return "audio/mp3"
-	}
-	return "image/jpeg"
-}
-
-// groqVision handles image analysis requests by cycling through vision-capable models.
-// imgURL يكون إما رابط https:// (يُرسَل مباشرة، حد 20MB) أو data:mime;base64,... (حد 4MB).
-func (s *Service) groqVision(ctx context.Context, messages []session.Message, imgURL, requestedModel string) (string, error) {
-	mgr := groqKeys()
-	if mgr.Empty() {
-		return "", fmt.Errorf("NO_GROQ_KEY")
-	}
-
-	chatMsgs := make([]any, 0, len(messages))
-	for i, m := range messages {
-		if i == len(messages)-1 && m.Role == "user" {
-			text := m.Content
-			if text == "" {
-				text = "وصف هذه الصورة"
-			}
-			chatMsgs = append(chatMsgs, map[string]any{
-				"role": "user",
-				"content": []any{
-					map[string]any{"type": "text", "text": text},
-					map[string]any{"type": "image_url", "image_url": map[string]any{
-						"url": imgURL, // https:// أو data URI — كلاهما مقبول في Groq
-					}},
-				},
-			})
-		} else {
-			chatMsgs = append(chatMsgs, map[string]any{"role": m.Role, "content": m.Content})
-		}
-	}
-
-	models := visionModels
-	if requestedModel != "" {
-		models = []string{requestedModel}
-	}
-	var lastErr error
-	for _, model := range models {
-		payload := map[string]any{
-			"model":      model,
-			"messages":   chatMsgs,
-			"max_tokens": 1024,
-		}
-		var reply string
-		err := mgr.Do(func(key string) (bool, error) {
-			r, status, e := s.postGroqChat(ctx, key, payload, 45*time.Second)
-			if e != nil {
-				return status == http.StatusTooManyRequests, e
-			}
-			reply = r
-			return false, nil
-		})
-		if err == nil && reply != "" {
-			return reply, nil
-		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return "", lastErr
-	}
-	return "", fmt.Errorf("ALL_VISION_MODELS_FAILED")
-}
-
-// splitForTTS breaks text into chunks that respect Orpheus's per-request character limit,
-// preferring to break at sentence or word boundaries rather than mid-word.
-func splitForTTS(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	var chunks []string
-	runes := []rune(text)
-	for len(runes) > 0 {
-		if len(runes) <= ttsMaxChars {
-			if piece := strings.TrimSpace(string(runes)); piece != "" {
-				chunks = append(chunks, piece)
-			}
-			break
-		}
-		cut := ttsMaxChars
-		for i := ttsMaxChars; i > 0; i-- {
-			switch runes[i] {
-			case '.', '؟', '!', '،', '\n', ' ':
-				cut = i + 1
-			}
-			if cut != ttsMaxChars {
-				break
-			}
-		}
-		if piece := strings.TrimSpace(string(runes[:cut])); piece != "" {
-			chunks = append(chunks, piece)
-		}
-		runes = runes[cut:]
-	}
-	return chunks
-}
-
-type groqTTSHTTPError struct {
-	status int
-	body   string
-}
-
-func (e *groqTTSHTTPError) Error() string {
-	return fmt.Sprintf("groq tts status %d: %s", e.status, e.body)
-}
-
-func isRetryableGroqTTSStatus(status int) bool {
-	return status == http.StatusInternalServerError || status == http.StatusBadGateway ||
-		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
-}
-
-func isRetryableGroqTTSError(err error) bool {
-	var statusErr *groqTTSHTTPError
-	return errors.As(err, &statusErr) && isRetryableGroqTTSStatus(statusErr.status)
-}
-
-// groqTTSChunk synthesizes a single Orpheus chunk, trying configured Groq API
-// keys in rotation and retrying transient 5xx responses before returning an error.
-func groqTTSChunk(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text, voice string) ([]byte, error) {
-	return groqTTSChunkAt(ctx, client, mgr, text, voice, groqTTSEndpoint)
-}
-
-// groqTTSChunkAt accepts an endpoint override so retries can be tested without
-// reaching the live Groq API.
-func groqTTSChunkAt(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text, voice, endpoint string) ([]byte, error) {
-	payload := map[string]any{
-		"model":           ttsModel,
-		"voice":           voice,
-		"input":           text,
-		"response_format": "wav",
-	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	if mgr == nil || mgr.Empty() {
-		return nil, keyrotate.ErrNoKeys
-	}
-	keys := mgr.RotatedKeys()
-	var failures []string
-	for attempt := 0; attempt < ttsMaxAttempts; attempt++ {
-		retryRound := false
-		for keyIndex, key := range keys {
-			audio, err := groqTTSRequest(ctx, client, key, endpoint, buf)
-			if err == nil {
-				return audio, nil
-			}
-			failures = append(failures, fmt.Sprintf("key %d: %s", keyIndex+1, truncate(err.Error(), 160)))
-			if isRetryableGroqTTSError(err) {
-				retryRound = true
-			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-		}
-		if !retryRound || attempt == ttsMaxAttempts-1 {
-			break
-		}
-		timer := time.NewTimer(ttsRetryBaseDelay * time.Duration(1<<attempt))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-		keys = mgr.RotatedKeys()
-	}
-	return nil, fmt.Errorf("Groq TTS فشل مع جميع المفاتيح المتاحة: %s", strings.Join(failures, " | "))
-}
-
-func groqTTSRequest(ctx context.Context, client *http.Client, key, endpoint string, payload []byte) ([]byte, error) {
-	ctxTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctxTimeout, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		return nil, &groqTTSHTTPError{status: resp.StatusCode, body: truncate(string(respBody), 200)}
-	}
-	if len(respBody) == 0 {
-		return nil, fmt.Errorf("groq tts returned empty audio")
-	}
-	return respBody, nil
-}
-
-// orpheusArabicVoices: الأصوات المتاحة في canopylabs/orpheus-arabic-saudi على Groq.
-// أضف المزيد هنا عند إتاحتها رسمياً.
-var orpheusArabicVoices = []string{"abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"}
-
-// OrpheusArabicModel returns the documented Saudi Arabic model ID.
-func OrpheusArabicModel() string { return ttsModel }
-
-// OrpheusArabicDefaultVoice returns the service's default Saudi Arabic voice.
-func OrpheusArabicDefaultVoice() string { return ttsVoice }
-
-// OrpheusArabicVoices يُعيد نسخة من قائمة أصوات Orpheus للاستخدام الخارجي.
-func OrpheusArabicVoices() []string {
-	return append([]string(nil), orpheusArabicVoices...)
-}
-
-// ArabicTTS يعرّض خط أنابيب Orpheus العربي على Groq (تقطيع + دمج ffmpeg) كدالة
-// عامة قابلة للاستخدام من بلجنات أخرى. يرجّع صوت WAV بصيغة base64.
-func ArabicTTS(ctx context.Context, client *http.Client, text string) (string, error) {
-	mgr := groqKeys()
-	if mgr.Empty() {
-		return "", fmt.Errorf("NO_GROQ_KEY")
-	}
-	return groqTTSGenerate(ctx, client, mgr, text)
-}
-
-// ArabicTTSWithVoice مثل ArabicTTS لكن مع تحديد الصوت صراحةً.
-// إذا كان voice فارغاً يُستخدم الصوت الافتراضي.
-func ArabicTTSWithVoice(ctx context.Context, client *http.Client, text, voice string) (string, error) {
-	mgr := groqKeys()
-	if mgr.Empty() {
-		return "", fmt.Errorf("NO_GROQ_KEY")
-	}
-	if voice == "" {
-		voice = ttsVoice
-	}
-	return groqTTSGenerateV(ctx, client, mgr, text, voice)
-}
-
-// groqTTSGenerateV مثل groqTTSGenerate لكن يمرّر voice لكل مقطع.
-func groqTTSGenerateV(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text, voice string) (string, error) {
-	chunks := splitForTTS(text)
-	if len(chunks) == 0 {
-		return "", fmt.Errorf("EMPTY_TTS_TEXT")
-	}
-	var tmpFiles []string
-	defer func() {
-		for _, f := range tmpFiles {
-			os.Remove(f)
-		}
-	}()
-	for i, c := range chunks {
-		raw, err := groqTTSChunk(ctx, client, mgr, c, voice)
-		if err != nil {
-			return "", fmt.Errorf("فشل توليد الصوت للمقطع %d: %w", i+1, err)
-		}
-		f, err := os.CreateTemp("", fmt.Sprintf("sunkenbot-tts-%d-*.wav", i))
-		if err != nil {
-			return "", err
-		}
-		if _, err := f.Write(raw); err != nil {
-			f.Close()
-			return "", err
-		}
-		f.Close()
-		tmpFiles = append(tmpFiles, f.Name())
-	}
-	if len(tmpFiles) == 1 {
-		raw, err := os.ReadFile(tmpFiles[0])
-		if err != nil {
-			return "", err
-		}
-		return base64.StdEncoding.EncodeToString(raw), nil
-	}
-	listFile, err := os.CreateTemp("", "sunkenbot-tts-list-*.txt")
-	if err != nil {
-		return "", err
-	}
-	defer os.Remove(listFile.Name())
-	for _, f := range tmpFiles {
-		fmt.Fprintf(listFile, "file '%s'\n", f)
-	}
-	listFile.Close()
-	outPath := listFile.Name() + "_merged.wav"
-	defer os.Remove(outPath)
-	ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctxTimeout, "ffmpeg",
-		"-f", "concat", "-safe", "0", "-i", listFile.Name(), "-c", "copy", "-y", outPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("ffmpeg concat failed: %w (%s)", err, truncate(string(out), 150))
-	}
-	merged, err := os.ReadFile(outPath)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(merged), nil
-}
-
-// groqTTS converts arbitrary-length text to speech, chunking as needed for Orpheus's
-// character limit and stitching multi-chunk replies into a single wav file via ffmpeg.
-// Returns base64-encoded wav audio.
-func (s *Service) groqTTS(ctx context.Context, text string) (string, error) {
-	mgr := groqKeys()
-	if mgr.Empty() {
-		return "", fmt.Errorf("NO_GROQ_KEY")
-	}
-	return groqTTSGenerate(ctx, s.client, mgr, text)
-}
-
-func groqTTSGenerate(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text string) (string, error) {
-	chunks := splitForTTS(text)
-	if len(chunks) == 0 {
-		return "", fmt.Errorf("EMPTY_TTS_TEXT")
-	}
-
-	var tmpFiles []string
-	defer func() {
-		for _, f := range tmpFiles {
-			os.Remove(f)
-		}
-	}()
-
-	for i, c := range chunks {
-		raw, err := groqTTSChunk(ctx, client, mgr, c, ttsVoice)
-		if err != nil {
-			return "", fmt.Errorf("فشل توليد الصوت للمقطع %d: %w", i+1, err)
-		}
-		f, err := os.CreateTemp("", fmt.Sprintf("sunkenbot-tts-%d-*.wav", i))
-		if err != nil {
-			return "", err
-		}
-		if _, err := f.Write(raw); err != nil {
-			f.Close()
-			return "", err
-		}
-		f.Close()
-		tmpFiles = append(tmpFiles, f.Name())
-	}
-
-	if len(tmpFiles) == 1 {
-		raw, err := os.ReadFile(tmpFiles[0])
-		if err != nil {
-			return "", err
-		}
-		return base64.StdEncoding.EncodeToString(raw), nil
-	}
-
-	// Multiple chunks: concatenate into one wav using ffmpeg's concat demuxer.
-	listFile, err := os.CreateTemp("", "sunkenbot-tts-list-*.txt")
-	if err != nil {
-		return "", err
-	}
-	defer os.Remove(listFile.Name())
-	for _, f := range tmpFiles {
-		fmt.Fprintf(listFile, "file '%s'\n", f)
-	}
-	listFile.Close()
-
-	outPath := listFile.Name() + "_merged.wav"
-	defer os.Remove(outPath)
-
-	ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctxTimeout, "ffmpeg",
-		"-f", "concat", "-safe", "0", "-i", listFile.Name(), "-c", "copy", "-y", outPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("ffmpeg concat failed: %w (%s)", err, truncate(string(out), 150))
-	}
-
-	merged, err := os.ReadFile(outPath)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(merged), nil
-}
-
-// processVideo extracts the first frame of a video using FFmpeg and passes it to the vision model.
-func (s *Service) processVideo(ctx context.Context, url, prompt string, messages []session.Message) (string, error) {
-	raw, _, err := s.fetchBase64(ctx, url)
-	if err != nil {
-		return videoFailMessage(err), nil
-	}
-
-	vidFile, err := os.CreateTemp("", "sunkenbot-*.mp4")
-	if err != nil {
-		return videoFailMessage(err), nil
-	}
-	vidPath := vidFile.Name()
-	defer os.Remove(vidPath)
-	if _, err := vidFile.Write(raw); err != nil {
-		vidFile.Close()
-		return videoFailMessage(err), nil
-	}
-	vidFile.Close()
-
-	framePath := strings.TrimSuffix(vidPath, ".mp4") + "_frame.jpg"
-	defer os.Remove(framePath)
-
-	ctxTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctxTimeout, "ffmpeg",
-		"-i", vidPath, "-ss", "00:00:01", "-vframes", "1", "-q:v", "2", framePath, "-y")
-	if err := cmd.Run(); err != nil {
-		return videoFailMessage(fmt.Errorf("ffmpeg failed: %w", err)), nil
-	}
-
-	frameRaw, err := os.ReadFile(framePath)
-	if err != nil {
-		return videoFailMessage(err), nil
-	}
-
-	imgURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(frameRaw)
-	reply, err := s.groqVision(ctx, messages, imgURL, "")
-	if err != nil {
-		return videoFailMessage(err), nil
-	}
-	return fmt.Sprintf("🎬 تحليل الفيديو (الإطار الأول):\n%s", reply), nil
-}
-
-// videoFailMessage returns a standardized fallback warning when video processing fails.
-func videoFailMessage(err error) string {
-	return fmt.Sprintf("⚠️ تعذّر تحليل الفيديو (%s). يمكنك أخذ screenshot وإرساله كصورة.", truncate(err.Error(), 60))
-}
-
-// postGroqChat sends a chat completion request to the Groq API endpoint. It also
-// returns the HTTP status code (0 on network-level failure) so callers can detect
-// rate limiting (429) and switch to the next key via keyrotate.Manager.Do.
-func (s *Service) postGroqChat(ctx context.Context, key string, payload map[string]any, timeout time.Duration) (string, int, error) {
-	buf, _ := json.Marshal(payload)
-	ctxTimeout, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctxTimeout, http.MethodPost,
-		"https://api.groq.com/openai/v1/chat/completions", bytes.NewReader(buf))
-	if err != nil {
-		return "", 0, err
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", 0, err
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return "", resp.StatusCode, fmt.Errorf("groq status %d: %s", resp.StatusCode, truncate(string(respBody), 200))
-	}
-
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", resp.StatusCode, err
-	}
-	if len(parsed.Choices) == 0 {
-		return "", resp.StatusCode, fmt.Errorf("empty choices")
-	}
-	return stripThinking(parsed.Choices[0].Message.Content), resp.StatusCode, nil
-}
-
-// stripThinking removes <think>...</think> reasoning traces that some models (e.g. qwen
-// reasoning models) prepend to their output. Handles an unclosed trailing <think> too,
-// in case the response was truncated mid-thought.
-func stripThinking(text string) string {
-	for {
-		start := strings.Index(text, "<think>")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(text[start:], "</think>")
-		if end == -1 {
-			// Unclosed think block: drop everything from <think> onward.
-			text = text[:start]
-			break
-		}
-		text = text[:start] + text[start+end+len("</think>"):]
-	}
-	return strings.TrimSpace(text)
-}
-
-// hasSystem checks if a system prompt is already included in the message slice.
-func hasSystem(messages []session.Message) bool {
-	for _, m := range messages {
-		if m.Role == "system" {
-			return true
-		}
-	}
-	return false
-}
-
-// toChatMessages converts domain session messages into standard map formats for API payloads.
-func toChatMessages(messages []session.Message) []map[string]string {
-	out := make([]map[string]string, len(messages))
-	for i, m := range messages {
-		out[i] = map[string]string{"role": m.Role, "content": m.Content}
-	}
-	return out
-}
-
-// parseMessages decodes raw interface arrays into structured session messages.
-func parseMessages(raw any) []session.Message {
-	arr, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]session.Message, 0, len(arr))
-	for _, item := range arr {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		out = append(out, session.Message{
-			Role:    stringOr(obj["role"], ""),
-			Content: stringOr(obj["content"], ""),
-		})
-	}
-	return out
-}
-
-func boolOr(v any) bool {
-	b, _ := v.(bool)
-	return b
-}
-
-// stringOr returns the string value if type assertion succeeds, otherwise returns the default value.
-func stringOr(v any, def string) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return def
-}
-
-// truncate shortens a string to a maximum specified length.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }

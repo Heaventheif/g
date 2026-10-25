@@ -110,9 +110,16 @@ func SafeFetch(ctx context.Context, client *http.Client, rawURL string, maxBytes
 // SafeFetchStream يقوم بنفس التحقق والتثبيت (pinning) اللذين تقوم بهما
 // SafeFetch، لكنه يُعيد *http.Response مباشرة بدل قراءة الجسم بالكامل في
 // الذاكرة. مخصّص للحالات التي يجب فيها بث الاستجابة إلى القرص (مثل تحميل
-// فيديو كبير) مع فرض حد الحجم لاحقاً عبر io.LimitReader على resp.Body —
-// راجع plugins/sub لمثال. المستدعي مسؤول عن إغلاق resp.Body.
+// فيديو كبير) مع فرض حد الحجم لاحقاً عبر io.LimitReader على resp.Body.
+// المستدعي مسؤول عن إغلاق resp.Body.
 func SafeFetchStream(ctx context.Context, client *http.Client, rawURL string) (*http.Response, error) {
+	return SafeFetchStreamWithHeader(ctx, client, rawURL, nil)
+}
+
+// SafeFetchStreamWithHeader مثل SafeFetchStream مع ترويسات إضافية (Referer/
+// Cookie/User-Agent...) يضعها المستدعي. تُطبَّق كل ضمانات SSRF/pinning كما هي؛
+// ترويسة User-Agent الافتراضية تُستبدل فقط إن مرّر المستدعي واحدة.
+func SafeFetchStreamWithHeader(ctx context.Context, client *http.Client, rawURL string, header http.Header) (*http.Response, error) {
 	u, pinnedIP, err := resolvePublicHost(ctx, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("رابط المرفق مرفوض: %w", err)
@@ -168,6 +175,12 @@ func SafeFetchStream(ctx context.Context, client *http.Client, rawURL string) (*
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
+	for k, vs := range header {
+		req.Header.Del(k)
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 
 	resp, err := pinnedClient.Do(req)
 	if err != nil {

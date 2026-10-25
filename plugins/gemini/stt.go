@@ -18,6 +18,7 @@ import (
 
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/netguard"
+	"sunkenbot/internal/strutil"
 )
 
 // gemini-3.5-flash-lite: الموديل المحدَّث بديلاً عن gemini-2.5-flash-lite
@@ -31,6 +32,14 @@ const transcribePrompt = "فرّغ (Transcribe) هذا المقطع الصوتي
 
 // maxSTTAudioBytes: 19MB — حد Gemini inline data
 const maxSTTAudioBytes = 19 * 1024 * 1024
+
+// حدود جسم JSON للمسارين اللذين يحملان بيانات base64: 4/3 من الحجم الخام
+// + هامش 64KB للحقول الأخرى. (الحد الافتراضي 10MB كان سيكسر الملفات الأكبر
+// من ~7.5MB رغم أن الحد المسموح 19-20MB.) ثوابت — لا globals متغيّرة.
+const (
+	maxSTTBodyBytes    = (maxSTTAudioBytes+2)/3*4 + 64<<10
+	maxVisionBodyBytes = (maxVisionImageBytes+2)/3*4 + 64<<10
+)
 
 var mimeByExt = map[string]string{
 	"mp3":  "audio/mp3",
@@ -55,7 +64,12 @@ func (s *Service) callGeminiSTT(ctx context.Context, base64Audio, mimeType strin
 	if len(keys) == 0 {
 		return "", fmt.Errorf("لا توجد مفاتيح GEMINI_API_KEY في البيئة")
 	}
+	return s.callGeminiSTTWithKeys(ctx, keys, base64Audio, mimeType)
+}
 
+// callGeminiSTTWithKeys منفصلة عن callGeminiSTT ليسهل اختبارها بمفاتيح معلومة
+// (geminiKeys() يُبنى مرة واحدة من البيئة عبر sync.OnceValue).
+func (s *Service) callGeminiSTTWithKeys(ctx context.Context, keys []string, base64Audio, mimeType string) (string, error) {
 	payload := map[string]any{
 		"contents": []any{map[string]any{
 			"parts": []any{
@@ -79,15 +93,18 @@ func (s *Service) callGeminiSTT(ctx context.Context, base64Audio, mimeType strin
 
 	var publicErrors []string
 	for i, key := range keys {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"?key="+key, bytes.NewReader(buf))
+		// المفتاح في الترويسة لا في الـ query: أي خطأ شبكة من client.Do يتضمن الـ URL
+		// كاملاً، فيتسرّب المفتاح إلى publicErrors/السجلات (كما في gemini.go و vision_call.go).
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
 		if err != nil {
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-goog-api-key", key)
 
 		resp, err := s.client.Do(req)
 		if err != nil {
-			publicErrors = append(publicErrors, fmt.Sprintf("مفتاح #%d: %s", i+1, truncate(err.Error(), 150)))
+			publicErrors = append(publicErrors, fmt.Sprintf("مفتاح #%d: %s", i+1, strutil.Truncate(err.Error(), 150)))
 			continue
 		}
 		respBody, _ := io.ReadAll(resp.Body)
@@ -152,7 +169,7 @@ func (s *Service) handleSTT(ctx context.Context, req STTRequest) (STTResponse, e
 		if err != nil {
 			return STTResponse{}, &httpx.HTTPError{
 				Code: http.StatusServiceUnavailable,
-				Body: map[string]any{"error": "تعذّر جلب الملف الصوتي: " + truncate(err.Error(), 200)},
+				Body: map[string]any{"error": "تعذّر جلب الملف الصوتي: " + strutil.Truncate(err.Error(), 200)},
 			}
 		}
 		raw = fetched
@@ -196,7 +213,7 @@ func (s *Service) handleSTT(ctx context.Context, req STTRequest) (STTResponse, e
 	if err != nil {
 		return STTResponse{}, &httpx.HTTPError{
 			Code: http.StatusServiceUnavailable,
-			Body: map[string]any{"error": truncate(err.Error(), 500)},
+			Body: map[string]any{"error": strutil.Truncate(err.Error(), 500)},
 		}
 	}
 

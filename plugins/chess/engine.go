@@ -7,16 +7,11 @@ package chess
 
 import (
 	"bufio"
-	"container/list"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -298,121 +293,4 @@ func (p *enginePool) close() {
 			return
 		}
 	}
-}
-
-// ─── Lichess Cloud Eval مع كاش LRU (يشمل غياب التحليل) ──────────────────────
-
-type lruCache struct {
-	mu  sync.Mutex
-	max int
-	ll  *list.List
-	m   map[string]*list.Element
-}
-
-type lruEntry struct {
-	key string
-	val string
-}
-
-func newLRU(max int) *lruCache {
-	return &lruCache{max: max, ll: list.New(), m: make(map[string]*list.Element)}
-}
-
-func (c *lruCache) get(k string) (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.m[k]; ok {
-		c.ll.MoveToFront(el)
-		return el.Value.(*lruEntry).val, true
-	}
-	return "", false
-}
-
-func (c *lruCache) put(k, v string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.m[k]; ok {
-		el.Value.(*lruEntry).val = v
-		c.ll.MoveToFront(el)
-		return
-	}
-	c.m[k] = c.ll.PushFront(&lruEntry{k, v})
-	for c.ll.Len() > c.max {
-		last := c.ll.Back()
-		c.ll.Remove(last)
-		delete(c.m, last.Value.(*lruEntry).key)
-	}
-}
-
-type lichessClient struct {
-	http  *http.Client
-	url   string
-	token string
-	cache *lruCache
-}
-
-func newLichess(token string, timeout time.Duration) *lichessClient {
-	return &lichessClient{
-		http:  &http.Client{Timeout: timeout},
-		url:   "https://lichess.org/api/cloud-eval",
-		token: token,
-		cache: newLRU(4096),
-	}
-}
-
-// posKey: أول 4 حقول من FEN (بدون عدّادات النقلات) لرفع نسبة الإصابة.
-func posKey(fen string) string {
-	f := strings.Fields(fen)
-	if len(f) > 4 {
-		f = f[:4]
-	}
-	return strings.Join(f, " ")
-}
-
-// move يعيد نقلة Lichess أو "" إن لم يتوفر تحليل / فشل الطلب.
-func (l *lichessClient) move(ctx context.Context, fen string) string {
-	key := posKey(fen)
-	if v, ok := l.cache.get(key); ok {
-		return v
-	}
-	q := url.Values{"fen": {fen}, "multiPv": {"1"}, "variant": {"standard"}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, l.url+"?"+q.Encode(), nil)
-	if err != nil {
-		return ""
-	}
-	req.Header.Set("Accept", "application/json")
-	if l.token != "" {
-		req.Header.Set("Authorization", "Bearer "+l.token)
-	}
-	resp, err := l.http.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusOK:
-		var body struct {
-			Pvs []struct {
-				Moves string `json:"moves"`
-			} `json:"pvs"`
-		}
-		if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body) == nil && len(body.Pvs) > 0 {
-			if f := strings.Fields(body.Pvs[0].Moves); len(f) > 0 {
-				l.cache.put(key, f[0])
-				return f[0]
-			}
-		}
-	case resp.StatusCode == http.StatusNotFound:
-		l.cache.put(key, "") // لا يوجد تحليل — تذكّر ذلك
-	}
-	return ""
-}
-
-func envInt(get func(string) string, key string, def int) int {
-	if v := get(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
 }

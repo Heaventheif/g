@@ -7,6 +7,7 @@ import (
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/netguard"
 	"sunkenbot/internal/plugins"
+	"sunkenbot/internal/strutil"
 )
 
 const Description = "Comic (arcomixverse.blogspot.com) — استخراج data-label وروابط صور الفصل، بدل cheerio.load() في JS"
@@ -51,7 +52,7 @@ func (s *Service) handleLabel(ctx context.Context, req LabelRequest) (LabelRespo
 	if err != nil {
 		return LabelResponse{}, &httpx.HTTPError{
 			Code: http.StatusServiceUnavailable,
-			Body: map[string]any{"error": "تعذّر جلب صفحة السلسلة: " + truncate(err.Error(), 150)},
+			Body: map[string]any{"error": "تعذّر جلب صفحة السلسلة: " + strutil.Truncate(err.Error(), 150)},
 		}
 	}
 	label, ok := extractMangaLabel(string(raw))
@@ -83,16 +84,9 @@ func (s *Service) handleImages(ctx context.Context, req ImagesRequest) (ImagesRe
 	if err != nil {
 		return ImagesResponse{}, &httpx.HTTPError{
 			Code: http.StatusServiceUnavailable,
-			Body: map[string]any{"error": "تعذّر جلب صفحة الفصل: " + truncate(err.Error(), 150)},
+			Body: map[string]any{"error": "تعذّر جلب صفحة الفصل: " + strutil.Truncate(err.Error(), 150)},
 		}
 	}
 	images := extractChapterImages(string(raw))
 	return ImagesResponse{Images: images}, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }

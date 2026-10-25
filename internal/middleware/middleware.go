@@ -54,6 +54,9 @@ func Auth(internalToken string, next http.Handler) http.Handler {
 			if isProbe(r) {
 				// طلبات الفحص تُرفض بصمت — لا حاجة لأي تسجيل بالسجلّات،
 				// الحماية نفسها (رفض الطلب) تعمل بغض النظر عن الطباعة.
+				// نكتب 401 صريحاً بلا جسم: return وحدها كانت تُرجع 200 بجسم فارغ
+				// (سلوك Go الافتراضي عند عدم الكتابة)، أي «نجاح» ظاهري للمهاجم.
+				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 

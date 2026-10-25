@@ -86,6 +86,12 @@ func newService() *Service {
 
 func (s *Service) Name() string { return "chess" }
 
+// Close يُنهي عمليات Stockfish (يُستدعى من main عند الإيقاف السليم).
+func (s *Service) Close() error {
+	s.pool.close()
+	return nil
+}
+
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
 		{Method: "POST", Pattern: "/process_move", Handler: httpx.Handle(s.handleProcessMove)},
