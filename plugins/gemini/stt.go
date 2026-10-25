@@ -7,12 +7,11 @@
 package gemini
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -86,62 +85,33 @@ func (s *Service) callGeminiSTTWithKeys(ctx context.Context, keys []string, base
 		},
 	}
 	buf, _ := json.Marshal(payload)
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
-		sttModel,
-	)
-
 	var publicErrors []string
 	for i, key := range keys {
-		// المفتاح في الترويسة لا في الـ query: أي خطأ شبكة من client.Do يتضمن الـ URL
-		// كاملاً، فيتسرّب المفتاح إلى publicErrors/السجلات (كما في gemini.go و vision_call.go).
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-		if err != nil {
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-goog-api-key", key)
-
-		resp, err := s.client.Do(req)
+		// المفتاح يُرسل بالترويسة داخل postGemini (لا في الـ URL — لا تسرّب في أخطاء الشبكة).
+		status, respBody, err := s.postGemini(ctx, sttModel, key, buf)
 		if err != nil {
 			publicErrors = append(publicErrors, fmt.Sprintf("مفتاح #%d: %s", i+1, strutil.Truncate(err.Error(), 150)))
 			continue
 		}
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
 
-		if resp.StatusCode >= 400 {
-			msg := extractGoogleErrorMessage(respBody, resp.StatusCode)
+		if status >= 400 {
+			msg := extractGoogleErrorMessage(respBody, status)
 			publicErrors = append(publicErrors, fmt.Sprintf("مفتاح #%d: %s", i+1, msg))
-			if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+			if status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable {
 				return "", fmt.Errorf("%s", msg)
 			}
 			continue
 		}
 
-		var parsed struct {
-			Candidates []struct {
-				Content struct {
-					Parts []struct {
-						Text string `json:"text"`
-					} `json:"parts"`
-				} `json:"content"`
-			} `json:"candidates"`
+		text, _, err := parseGeminiText(respBody)
+		if err == nil {
+			return text, nil
 		}
-		if err := json.Unmarshal(respBody, &parsed); err != nil {
+		if errors.Is(err, errGeminiInvalidJSON) {
 			publicErrors = append(publicErrors, fmt.Sprintf("مفتاح #%d: استجابة غير صالحة", i+1))
-			continue
-		}
-		if len(parsed.Candidates) == 0 || len(parsed.Candidates[0].Content.Parts) == 0 {
+		} else {
 			publicErrors = append(publicErrors, fmt.Sprintf("مفتاح #%d: استجابة فارغة", i+1))
-			continue
 		}
-		text := strings.TrimSpace(parsed.Candidates[0].Content.Parts[0].Text)
-		if text == "" {
-			publicErrors = append(publicErrors, fmt.Sprintf("مفتاح #%d: استجابة فارغة", i+1))
-			continue
-		}
-		return text, nil
 	}
 
 	return "", fmt.Errorf("كل مفاتيح Gemini فشلت:\n%s", strings.Join(publicErrors, "\n"))

@@ -98,7 +98,7 @@ func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
 		return s.handleSessionMode(ctx, body)
 	}
 
-	messages := parseMessages(body["messages"])
+	messages := session.ParseMessages(body["messages"])
 	if len(messages) == 0 {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
@@ -248,6 +248,9 @@ func (s *Service) dispatchAttachment(ctx context.Context, att *attachment, messa
 			return reply, "groq-vision", err
 		}
 
+	// ملاحظة: Kind == "audio" غير معالَج هنا عن قصد — يسقط إلى دردشة نصية
+	// بلا مرفق. تفريغ الصوت يتم عبر POST /groq/stt (handleSTT) ثم يُرسل النص
+	// الناتج كـ prompt عادي. (قرار المالك؛ أضف فرعاً هنا فقط بعد تغيير هذا العقد.)
 	case "video":
 		if att.URL == "" {
 			break

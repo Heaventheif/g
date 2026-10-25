@@ -29,6 +29,26 @@ type Message struct {
 	Content string `json:"content" bson:"content"`
 }
 
+// ParseMessages يحوّل مصفوفة JSON مفكوكة (any) إلى []Message؛ العناصر غير الخرائطية
+// تُتجاهل، والحقول غير النصية تصبح "". كانت نسختين متطابقتين في gemini وgroq.
+func ParseMessages(raw any) []Message {
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]Message, 0, len(arr))
+	for _, item := range arr {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := obj["role"].(string)
+		content, _ := obj["content"].(string)
+		out = append(out, Message{Role: role, Content: content})
+	}
+	return out
+}
+
 // Store هي الواجهة المكافئة لـ _get_db/_load/_save/_clear في بايثون.
 type Store interface {
 	Load(ctx context.Context, threadID string) ([]Message, error)

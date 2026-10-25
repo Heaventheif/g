@@ -18,8 +18,22 @@ var (
 	novelFullChapterPathRe = regexp.MustCompile(`(?i)(?:^|/)chapter-[^/]+\.html$`)
 )
 
+func newAttrRegexp(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(name) + `\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+}
+
+// novelFullAttrRes: السمتان المستعملتان فعلاً مجمَّعتان مسبقاً (جدول للقراءة فقط
+// بعد التهيئة)؛ أي اسم آخر يُجمَّع عند الطلب.
+var novelFullAttrRes = map[string]*regexp.Regexp{
+	"title": newAttrRegexp("title"),
+	"href":  newAttrRegexp("href"),
+}
+
 func novelFullAttribute(openTag, name string) string {
-	pattern := regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(name) + `\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+	pattern, ok := novelFullAttrRes[name]
+	if !ok {
+		pattern = newAttrRegexp(name)
+	}
 	match := pattern.FindStringSubmatch(openTag)
 	if match == nil {
 		return ""

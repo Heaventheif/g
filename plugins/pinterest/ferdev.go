@@ -122,6 +122,9 @@ func (s *Service) ferdevSearch(ctx context.Context, query string, limit int) []i
 
 // ─── ترميز base64 مقصوص (نفس منطق بايثون بالضبط، حتى لو كان تقصيره غريباً) ─
 
+// ملاحظة (متعمَّد): التقصير إلى 120 حرفاً من base64 ثم "..." يجعل Thumbnail
+// «علامة مرئية» فقط — ليس data URI صالحاً كصورة قابلة للعرض. لا تُحوِّله إلى
+// صورة كاملة دون تغيير عقد الاستجابة مع العميل.
 func (s *Service) encodeThumbnailsBase64(ctx context.Context, images []imageResult) {
 	var wg sync.WaitGroup
 	for i := range images {

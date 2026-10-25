@@ -4,7 +4,6 @@ go 1.26
 require (
 	github.com/chromedp/cdproto v0.0.0-20260719223732-95f6af754cfe
 	github.com/chromedp/chromedp v0.16.0
-	github.com/gocolly/colly/v2 v2.2.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/PuerkitoBio/goquery v1.12.0 // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect

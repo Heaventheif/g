@@ -7,11 +7,9 @@
 package gemini
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -28,6 +26,7 @@ const Description = "Gemini 2.5 Flash (Multimodal) — دردشة + تحليل �
 type Service struct {
 	client *http.Client
 	store  session.Store
+	tts    ttsState // كاش TTS ومجمّع الأصوات (حالة لكل Service لا global)
 }
 
 func New(client *http.Client, store session.Store) *Service {
@@ -56,8 +55,9 @@ func (s *Service) handleGemini(r *http.Request) (map[string]any, error) {
 
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// جسم JSON غير صالح خطأ من العميل (400) لا من الخادم.
 		return nil, &httpx.HTTPError{
-			Code: http.StatusInternalServerError,
+			Code: http.StatusBadRequest,
 			Body: map[string]any{"error": strutil.Truncate(err.Error(), 200)},
 		}
 	}
@@ -70,7 +70,7 @@ func (s *Service) handleGemini(r *http.Request) (map[string]any, error) {
 	}
 
 	// النمط القديم: messages مباشرة
-	messages := parseMessages(body["messages"])
+	messages := session.ParseMessages(body["messages"])
 	if len(messages) == 0 {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
@@ -214,78 +214,16 @@ func (s *Service) callGemini(ctx context.Context, messages []session.Message) (r
 	}
 	buf, _ := json.Marshal(payload)
 
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
-		chatModel,
-	)
-
 	for _, key := range geminiKeys().RotatedKeys() {
-		req, e := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+		// أي فشل (شبكة، 429، أي >=400، استجابة غير صالحة/فارغة) ⇒ جرّب المفتاح التالي بصمت.
+		status, respBody, e := s.postGemini(ctx, chatModel, key, buf)
+		if e != nil || status >= 400 {
+			continue
+		}
+		text, srcs, e := parseGeminiText(respBody)
 		if e != nil {
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-goog-api-key", key)
-
-		resp, e := s.client.Do(req)
-		if e != nil {
-			continue
-		}
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusTooManyRequests {
-			continue // جرّب المفتاح التالي
-		}
-		if resp.StatusCode >= 400 {
-			continue
-		}
-
-		var parsed struct {
-			Candidates []struct {
-				Content struct {
-					Parts []struct {
-						Text string `json:"text"`
-					} `json:"parts"`
-				} `json:"content"`
-			} `json:"candidates"`
-			// استخراج مصادر البحث من groundingMetadata
-			GroundingMetadata *struct {
-				GroundingChunks []struct {
-					Web *struct {
-						URI   string `json:"uri"`
-						Title string `json:"title"`
-					} `json:"web"`
-				} `json:"groundingChunks"`
-			} `json:"groundingMetadata"`
-		}
-
-		if e := json.Unmarshal(respBody, &parsed); e != nil {
-			continue
-		}
-		if len(parsed.Candidates) == 0 || len(parsed.Candidates[0].Content.Parts) == 0 {
-			continue
-		}
-
-		text := strings.TrimSpace(parsed.Candidates[0].Content.Parts[0].Text)
-		if text == "" {
-			continue
-		}
-
-		// استخراج مصادر البحث إن وُجدت
-		var srcs []string
-		if parsed.GroundingMetadata != nil {
-			for _, chunk := range parsed.GroundingMetadata.GroundingChunks {
-				if chunk.Web != nil && chunk.Web.URI != "" {
-					label := chunk.Web.Title
-					if label == "" {
-						label = chunk.Web.URI
-					}
-					srcs = append(srcs, label)
-				}
-			}
-		}
-
 		return text, srcs, nil
 	}
 
@@ -310,21 +248,3 @@ func toGeminiContents(messages []session.Message) []map[string]any {
 	return contents
 }
 
-func parseMessages(raw any) []session.Message {
-	arr, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]session.Message, 0, len(arr))
-	for _, item := range arr {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		out = append(out, session.Message{
-			Role:    strutil.StringOr(obj["role"], ""),
-			Content: strutil.StringOr(obj["content"], ""),
-		})
-	}
-	return out
-}

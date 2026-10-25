@@ -28,21 +28,14 @@ const (
 	ttsCacheMaxSize = 50
 )
 
-var (
-	groqPoolMu sync.Mutex
-	groqPool   []string
-)
-
-func nextGroqVoice() string {
-	groqPoolMu.Lock()
-	defer groqPoolMu.Unlock()
-	if len(groqPool) == 0 {
-		groqPool = groq.OrpheusArabicVoices()
-		rand.Shuffle(len(groqPool), func(i, j int) { groqPool[i], groqPool[j] = groqPool[j], groqPool[i] })
-	}
-	voice := groqPool[len(groqPool)-1]
-	groqPool = groqPool[:len(groqPool)-1]
-	return voice
+// ttsState حالة TTS كحقل في Service (بدل متغيرات حزمة عامة): كاش LRU بسعة
+// ttsCacheMaxSize + مجمّع أصوات Groq العشوائي. القيمة الصفرية صالحة للاستعمال
+// (الخريطة تُنشأ عند أول كتابة) لأن الاختبارات تبني &Service{} مباشرة.
+type ttsState struct {
+	mu        sync.Mutex
+	cache     map[string]ttsCacheEntry
+	order     []string
+	voicePool []string
 }
 
 // TTS Cache (LRU 50 عنصر)
@@ -51,39 +44,49 @@ type ttsCacheEntry struct {
 	voice string
 }
 
-var (
-	ttsCacheMu  sync.Mutex
-	ttsCacheMap = make(map[string]ttsCacheEntry, ttsCacheMaxSize)
-	ttsCacheOrd []string
-)
+// nextVoice يعيد صوتاً من مجمّع مُخلَّط، ويعيد تعبئته عند نفاده.
+func (t *ttsState) nextVoice() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.voicePool) == 0 {
+		t.voicePool = groq.OrpheusArabicVoices()
+		rand.Shuffle(len(t.voicePool), func(i, j int) { t.voicePool[i], t.voicePool[j] = t.voicePool[j], t.voicePool[i] })
+	}
+	voice := t.voicePool[len(t.voicePool)-1]
+	t.voicePool = t.voicePool[:len(t.voicePool)-1]
+	return voice
+}
 
 func ttsCacheKey(text, voice string) string {
 	h := sha256.Sum256([]byte(text + "\x00" + voice))
 	return base64.RawStdEncoding.EncodeToString(h[:16])
 }
 
-func ttsFromCache(key string) ([]byte, string, bool) {
-	ttsCacheMu.Lock()
-	defer ttsCacheMu.Unlock()
-	if e, ok := ttsCacheMap[key]; ok {
+func (t *ttsState) fromCache(key string) ([]byte, string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e, ok := t.cache[key]; ok {
 		return e.wav, e.voice, true
 	}
 	return nil, "", false
 }
 
-func ttsToCache(key string, wav []byte, voice string) {
-	ttsCacheMu.Lock()
-	defer ttsCacheMu.Unlock()
-	if _, exists := ttsCacheMap[key]; exists {
+func (t *ttsState) toCache(key string, wav []byte, voice string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cache == nil {
+		t.cache = make(map[string]ttsCacheEntry, ttsCacheMaxSize)
+	}
+	if _, exists := t.cache[key]; exists {
 		return
 	}
-	if len(ttsCacheOrd) >= ttsCacheMaxSize {
-		oldest := ttsCacheOrd[0]
-		ttsCacheOrd = ttsCacheOrd[1:]
-		delete(ttsCacheMap, oldest)
+	if len(t.order) >= ttsCacheMaxSize {
+		oldest := t.order[0]
+		t.order = t.order[1:]
+		delete(t.cache, oldest)
 	}
-	ttsCacheMap[key] = ttsCacheEntry{wav: wav, voice: voice}
-	ttsCacheOrd = append(ttsCacheOrd, key)
+	t.cache[key] = ttsCacheEntry{wav: wav, voice: voice}
+	t.order = append(t.order, key)
 }
 
 func hasArabicText(text string) bool {
@@ -133,10 +136,10 @@ func callPiperTTS(ctx context.Context, text string) ([]byte, error) {
 }
 
 // callGroqThenPiper يجعل Groq Orpheus المزود الأساسي، ولا يستعمل Piper إلا عند فشل Groq.
-func callGroqThenPiper(ctx context.Context, text, voice string) ([]byte, string, error) {
+func (s *Service) callGroqThenPiper(ctx context.Context, text, voice string) ([]byte, string, error) {
 	groqVoice := strings.TrimSpace(voice)
 	if groqVoice == "" {
-		groqVoice = nextGroqVoice()
+		groqVoice = s.tts.nextVoice()
 	}
 	groqB64, groqErr := groq.ArabicTTSWithVoice(ctx, &http.Client{Timeout: 45 * time.Second}, text, groqVoice)
 	if groqErr == nil {
@@ -186,15 +189,15 @@ func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, e
 
 	voice := strings.TrimSpace(req.Voice)
 	cacheKey := ttsCacheKey(text, voice)
-	if cached, cachedVoice, ok := ttsFromCache(cacheKey); ok {
+	if cached, cachedVoice, ok := s.tts.fromCache(cacheKey); ok {
 		return TTSResponse{AudioBase64: base64.StdEncoding.EncodeToString(cached), MimeType: "audio/wav", Voice: cachedVoice, Cached: true}, nil
 	}
 
-	audio, usedVoice, err := callGroqThenPiper(ctx, text, voice)
+	audio, usedVoice, err := s.callGroqThenPiper(ctx, text, voice)
 	if err != nil {
 		return TTSResponse{}, &httpx.HTTPError{Code: http.StatusServiceUnavailable, Body: map[string]any{"error": strutil.Truncate(err.Error(), 450)}}
 	}
-	ttsToCache(cacheKey, audio, usedVoice)
+	s.tts.toCache(cacheKey, audio, usedVoice)
 	return TTSResponse{AudioBase64: base64.StdEncoding.EncodeToString(audio), MimeType: "audio/wav", Voice: usedVoice, Cached: false}, nil
 }
 
@@ -207,17 +210,5 @@ func (s *Service) handleTTSVoices(r *http.Request) (map[string]any, error) {
 		"piper_fallback_model": piperVoice,
 		"piper_voices":         []string{piperVoice},
 		"pipeline":             "Groq Orpheus Arabic Saudi primary; Piper Arabic fallback",
-	}, nil
-}
-
-// GET /gemini/tts/cache/stats
-func (s *Service) handleTTSCacheStats(r *http.Request) (map[string]any, error) {
-	ttsCacheMu.Lock()
-	size := len(ttsCacheMap)
-	ttsCacheMu.Unlock()
-	return map[string]any{
-		"cache_size":     size,
-		"cache_max_size": ttsCacheMaxSize,
-		"pipeline":       "Groq Orpheus Arabic Saudi primary; Piper Arabic fallback",
 	}, nil
 }

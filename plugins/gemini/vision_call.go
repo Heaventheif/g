@@ -3,12 +3,11 @@ package gemini
 // vision_call.go — استدعاء Gemini Vision مع إعادة المحاولة.
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -65,21 +64,10 @@ func (s *Service) callGeminiVision(ctx context.Context, imageData []byte, mimeTy
 	}
 
 	for _, model := range models {
-		url := fmt.Sprintf(
-			"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
-			model,
-		)
 		modelUnavailable := false
 		for keyIndex, key := range keys {
 			for attempt := 0; attempt < maxGeminiVisionAttempts; attempt++ {
-				req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-				if err != nil {
-					return "", nil, err
-				}
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("X-goog-api-key", key)
-
-				resp, err := s.client.Do(req)
+				status, respBody, err := s.postGemini(ctx, model, key, buf)
 				if err != nil {
 					publicErrors = append(publicErrors, fmt.Sprintf("%s / مفتاح #%d: %s", model, keyIndex+1, strutil.Truncate(err.Error(), 150)))
 					if attempt+1 == maxGeminiVisionAttempts {
@@ -91,16 +79,14 @@ func (s *Service) callGeminiVision(ctx context.Context, imageData []byte, mimeTy
 					}
 					continue
 				}
-				respBody, _ := io.ReadAll(resp.Body)
-				resp.Body.Close()
 
-				if resp.StatusCode == http.StatusTooManyRequests {
-					msg := extractGoogleErrorMessage(respBody, resp.StatusCode)
+				if status == http.StatusTooManyRequests {
+					msg := extractGoogleErrorMessage(respBody, status)
 					publicErrors = append(publicErrors, fmt.Sprintf("%s / مفتاح #%d: %s", model, keyIndex+1, msg))
 					break // جرّب المفتاح التالي، ثم الموديل الاحتياطي عند الحاجة
 				}
-				if resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout {
-					msg := extractGoogleErrorMessage(respBody, resp.StatusCode)
+				if status >= 500 || status == http.StatusRequestTimeout {
+					msg := extractGoogleErrorMessage(respBody, status)
 					publicErrors = append(publicErrors, fmt.Sprintf("%s / محاولة %d: %s", model, attempt+1, msg))
 					if attempt+1 == maxGeminiVisionAttempts {
 						modelUnavailable = true
@@ -111,59 +97,25 @@ func (s *Service) callGeminiVision(ctx context.Context, imageData []byte, mimeTy
 					}
 					continue
 				}
-				if resp.StatusCode >= 400 {
-					msg := extractGoogleErrorMessage(respBody, resp.StatusCode)
+				if status >= 400 {
+					msg := extractGoogleErrorMessage(respBody, status)
 					publicErrors = append(publicErrors, fmt.Sprintf("%s / مفتاح #%d: %s", model, keyIndex+1, msg))
-					if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+					if status == http.StatusUnauthorized || status == http.StatusForbidden {
 						break // قد يكون مفتاحاً غير صالح؛ جرّب المفتاح التالي
 					}
 					return "", nil, fmt.Errorf("%s", msg)
 				}
 
-				var parsed struct {
-					Candidates []struct {
-						Content struct {
-							Parts []struct {
-								Text string `json:"text"`
-							} `json:"parts"`
-						} `json:"content"`
-					} `json:"candidates"`
-					GroundingMetadata *struct {
-						GroundingChunks []struct {
-							Web *struct {
-								URI   string `json:"uri"`
-								Title string `json:"title"`
-							} `json:"web"`
-						} `json:"groundingChunks"`
-					} `json:"groundingMetadata"`
-				}
-
-				if err := json.Unmarshal(respBody, &parsed); err != nil || len(parsed.Candidates) == 0 || len(parsed.Candidates[0].Content.Parts) == 0 {
-					publicErrors = append(publicErrors, fmt.Sprintf("%s: استجابة غير صالحة أو فارغة", model))
-					modelUnavailable = true
-					break
-				}
-
-				text := strings.TrimSpace(parsed.Candidates[0].Content.Parts[0].Text)
-				if text == "" {
-					publicErrors = append(publicErrors, fmt.Sprintf("%s: استجابة فارغة", model))
-					modelUnavailable = true
-					break
-				}
-
-				var sources []string
-				if parsed.GroundingMetadata != nil {
-					for _, chunk := range parsed.GroundingMetadata.GroundingChunks {
-						if chunk.Web != nil && chunk.Web.URI != "" {
-							label := chunk.Web.Title
-							if label == "" {
-								label = chunk.Web.URI
-							}
-							sources = append(sources, label)
-						}
+				text, sources, perr := parseGeminiText(respBody)
+				if perr != nil {
+					if errors.Is(perr, errGeminiEmptyText) {
+						publicErrors = append(publicErrors, fmt.Sprintf("%s: استجابة فارغة", model))
+					} else {
+						publicErrors = append(publicErrors, fmt.Sprintf("%s: استجابة غير صالحة أو فارغة", model))
 					}
+					modelUnavailable = true
+					break
 				}
-
 				return text, sources, nil
 			}
 		}

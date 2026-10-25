@@ -19,6 +19,26 @@ func textOf(fragment string) string {
 	return html.UnescapeString(tagStripRe.ReplaceAllString(fragment, ""))
 }
 
+type tagRegexps struct{ open, close *regexp.Regexp }
+
+func newTagRegexps(tag string) tagRegexps {
+	return tagRegexps{
+		open:  regexp.MustCompile(`(?is)<` + tag + `(?:\s[^>]*)?>`),
+		close: regexp.MustCompile(`(?is)</` + tag + `\s*>`),
+	}
+}
+
+// balancedTagRes: regex الفتح/الإغلاق مجمَّعة مسبقاً للوسوم المستعملة فعلياً.
+// الجدول للقراءة فقط بعد التهيئة (آمن للتزامن بلا قفل ولا حالة عامة متغيّرة)؛
+// أي وسم خارجه يُجمَّع عند الطلب كما كان.
+var balancedTagRes = func() map[string]tagRegexps {
+	m := make(map[string]tagRegexps)
+	for _, t := range []string{"div", "section", "article", "main", "body", "title", "h1"} {
+		m[t] = newTagRegexps(t)
+	}
+	return m
+}()
+
 type tagEvent struct {
 	pos, end int
 	open     bool
@@ -28,8 +48,11 @@ type tagEvent struct {
 // محتواه الداخلي مع موازنة الوسوم المتداخلة من نفس النوع (تقابل
 // soup.select_one(sel) من ناحية اختيار أول عنصر مطابق).
 func extractBalancedTag(htmlStr, tag string, matchAttrs func(string) bool) (string, bool) {
-	openRe := regexp.MustCompile(`(?is)<` + tag + `(?:\s[^>]*)?>`)
-	closeRe := regexp.MustCompile(`(?is)</` + tag + `\s*>`)
+	res, ok := balancedTagRes[tag]
+	if !ok {
+		res = newTagRegexps(tag)
+	}
+	openRe, closeRe := res.open, res.close
 
 	var events []tagEvent
 	for _, o := range openRe.FindAllStringIndex(htmlStr, -1) {

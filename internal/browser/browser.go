@@ -54,24 +54,11 @@ var humanUA = []string{
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
 }
 
-// userAgentsLegacy تبقى متاحة للتوافق مع الكود القديم الذي يعتمد على
-// RandomUserAgent() — نفس القائمة السابقة حرفياً.
-var userAgentsLegacy = []string{
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-}
-
 // RandomUserAgent يعيد user agent عشوائياً من القائمة الحديثة (2026).
 // الكود القديم الذي كان يعتمد على القائمة السابقة ينتقل تلقائياً للقائمة
 // الأحدث — هذا مقصود لأن القائمة القديمة أصبحت بصمة كشف.
 func RandomUserAgent() string {
 	return humanUA[rand.Intn(len(humanUA))]
-}
-
-// RandomUserAgentLegacy: القائمة القديمة للتوافق الكامل.
-func RandomUserAgentLegacy() string {
-	return userAgentsLegacy[rand.Intn(len(userAgentsLegacy))]
 }
 
 // Options يخصص جلسة متصفح واحدة.

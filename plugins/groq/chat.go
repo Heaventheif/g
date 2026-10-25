@@ -134,26 +134,6 @@ func toChatMessages(messages []session.Message) []map[string]string {
 	return out
 }
 
-// parseMessages decodes raw interface arrays into structured session messages.
-func parseMessages(raw any) []session.Message {
-	arr, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]session.Message, 0, len(arr))
-	for _, item := range arr {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		out = append(out, session.Message{
-			Role:    strutil.StringOr(obj["role"], ""),
-			Content: strutil.StringOr(obj["content"], ""),
-		})
-	}
-	return out
-}
-
 func boolOr(v any) bool {
 	b, _ := v.(bool)
 	return b

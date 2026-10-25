@@ -198,8 +198,12 @@ func ArabicTTSWithVoice(ctx context.Context, client *http.Client, text, voice st
 	return groqTTSGenerateV(ctx, client, mgr, text, voice)
 }
 
-// groqTTSGenerateV مثل groqTTSGenerate لكن يمرّر voice لكل مقطع.
+// groqTTSGenerateV التنفيذ الوحيد: تقطيع + توليد كل مقطع بالصوت voice (الفارغ ⇒ ttsVoice)
+// + دمج ffmpeg عند تعدد المقاطع.
 func groqTTSGenerateV(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text, voice string) (string, error) {
+	if voice == "" {
+		voice = ttsVoice
+	}
 	chunks := splitForTTS(text)
 	if len(chunks) == 0 {
 		return "", fmt.Errorf("EMPTY_TTS_TEXT")
@@ -269,69 +273,7 @@ func (s *Service) groqTTS(ctx context.Context, text string) (string, error) {
 	return groqTTSGenerate(ctx, s.client, mgr, text)
 }
 
+// groqTTSGenerate = groqTTSGenerateV بالصوت الافتراضي (تُبقي التوقيع القديم لمن يستدعيها).
 func groqTTSGenerate(ctx context.Context, client *http.Client, mgr *keyrotate.Manager, text string) (string, error) {
-	chunks := splitForTTS(text)
-	if len(chunks) == 0 {
-		return "", fmt.Errorf("EMPTY_TTS_TEXT")
-	}
-
-	var tmpFiles []string
-	defer func() {
-		for _, f := range tmpFiles {
-			os.Remove(f)
-		}
-	}()
-
-	for i, c := range chunks {
-		raw, err := groqTTSChunk(ctx, client, mgr, c, ttsVoice)
-		if err != nil {
-			return "", fmt.Errorf("فشل توليد الصوت للمقطع %d: %w", i+1, err)
-		}
-		f, err := os.CreateTemp("", fmt.Sprintf("sunkenbot-tts-%d-*.wav", i))
-		if err != nil {
-			return "", err
-		}
-		if _, err := f.Write(raw); err != nil {
-			f.Close()
-			return "", err
-		}
-		f.Close()
-		tmpFiles = append(tmpFiles, f.Name())
-	}
-
-	if len(tmpFiles) == 1 {
-		raw, err := os.ReadFile(tmpFiles[0])
-		if err != nil {
-			return "", err
-		}
-		return base64.StdEncoding.EncodeToString(raw), nil
-	}
-
-	// Multiple chunks: concatenate into one wav using ffmpeg's concat demuxer.
-	listFile, err := os.CreateTemp("", "sunkenbot-tts-list-*.txt")
-	if err != nil {
-		return "", err
-	}
-	defer os.Remove(listFile.Name())
-	for _, f := range tmpFiles {
-		fmt.Fprintf(listFile, "file '%s'\n", f)
-	}
-	listFile.Close()
-
-	outPath := listFile.Name() + "_merged.wav"
-	defer os.Remove(outPath)
-
-	ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctxTimeout, "ffmpeg",
-		"-f", "concat", "-safe", "0", "-i", listFile.Name(), "-c", "copy", "-y", outPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("ffmpeg concat failed: %w (%s)", err, strutil.Truncate(string(out), 150))
-	}
-
-	merged, err := os.ReadFile(outPath)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(merged), nil
+	return groqTTSGenerateV(ctx, client, mgr, text, "")
 }

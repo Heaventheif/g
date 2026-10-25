@@ -20,7 +20,8 @@ jobs:
       - name: Install stockfish
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends stockfish
       # يفشل إن كان go.mod/go.sum غير مرتَّبين — البناء في Docker بـ -mod=readonly
-      # ولا يُصلح شيئاً بنفسه (Go >= 1.23 لـ -diff).
+      # ولا يُصلح شيئاً بنفسه (Go >= 1.23 لـ -diff). ملاحظة: `go mod tidy` لا يقبل
+      # -tags؛ هو يعامل كل وسوم البناء (ومنها postgres) كأنها مفعّلة، فلا حاجة لها.
       - name: go mod tidy (no diff)
         run: go mod tidy -diff
       - name: gofmt
@@ -79,15 +80,23 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           pip install --quiet huggingface_hub
-          python3 - <<'EOF'
+          python3 - <<'PY'
           import os
           from huggingface_hub import HfApi
 
-          api   = HfApi(token=os.environ["HF_TOKEN"])
-          info  = api.space_info(repo_id="kiyunhai/g")
+          api  = HfApi(token=os.environ["HF_TOKEN"])
+          info = api.space_info(repo_id="kiyunhai/g")
+
+          # cardData قد تكون None (فضاء بلا README YAML بعد) — لا تفترض وجودها
+          card = info.cardData or {}
+          sdk  = card.get("sdk", "N/A")
+
+          # runtime قد تكون None قبل أول build
+          runtime = info.runtime
+          stage   = getattr(runtime, "stage", "N/A") if runtime else "N/A"
 
           print(f"✅ Space : {info.id}")
-          print(f"   SDK   : {info.cardData.get('sdk', 'N/A')}")
+          print(f"   SDK   : {sdk}")
           print(f"   URL   : https://huggingface.co/spaces/{info.id}")
-          print(f"   Stage : {getattr(info, 'runtime', {})}")
-          EOF
+          print(f"   Stage : {stage}")
+          PY
