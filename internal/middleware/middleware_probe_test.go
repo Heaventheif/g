@@ -23,6 +23,15 @@ func TestIsProbe(t *testing.T) {
 		{"8.8.8.8:55555", "/gemini", false},            // طلب حقيقي من خارج
 		{"10.16.32.103:64550", "/novel/resolve", true}, // IP داخلي حتى لمسار صحيح (scanner داخلي للمنصة)
 		{"127.0.0.1:34452", "/.env", true},             // مسار مشبوه
+		{"127.0.0.1:34452", "/gemini", true},           // loopback حتى لمسار صحيح
+		{"[::1]:8080", "/gemini", true},                // IPv6 loopback
+		{"[fe80::1]:8080", "/gemini", true},            // IPv6 link-local unicast
+		{"[ff02::1]:8080", "/gemini", true},            // IPv6 link-local multicast
+		{"169.254.10.20:8080", "/gemini", true},        // IPv4 link-local
+		{"172.16.0.1:8080", "/gemini", true},           // أول عنوان في 172.16/12
+		{"172.31.255.254:8080", "/gemini", true},       // آخر عنوان في 172.16/12
+		{"172.32.0.1:8080", "/gemini", false},          // خارج 172.16/12
+		{"192.168.1.1:8080", "/gemini", true},          // 192.168/16
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest("GET", c.path, nil)

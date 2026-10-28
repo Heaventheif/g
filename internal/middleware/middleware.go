@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -79,16 +80,15 @@ func Auth(internalToken string, next http.Handler) http.Handler {
 
 // ─── تجاهل طلبات بوتات الفحص ──────────────────────────────────────
 
-// isProbe يكشف طلب فحص آلي: IP داخلي (10.0.0.0/8) أو مسار مشبوه معروف.
+// isProbe يكشف طلب فحص آلي: IP loopback/private/link-local أو مسار مشبوه معروف.
 func isProbe(r *http.Request) bool {
-	host := r.RemoteAddr
-	for i := 0; i < len(host); i++ {
-		if host[i] == ':' { // قطع المنفذ
-			host = host[:i]
-			break
-		}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// يدعم RemoteAddr دون منفذ، بما فيه صيغة IPv6 بين أقواس.
+		host = strings.Trim(r.RemoteAddr, "[]")
 	}
-	if strings.HasPrefix(host, "10.") {
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
 		return true
 	}
 	// مسارات فحص كلاسيكية:
