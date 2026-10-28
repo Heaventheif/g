@@ -1,10 +1,14 @@
 package groq
 
 import (
+	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"sunkenbot/internal/session"
 )
 
 // TestParseAttachment_RootLevel يوثّق العطل الحرِج الذي دفع لكتابة هذا
@@ -106,5 +110,17 @@ func TestVisionModelIsCurrentGroqModel(t *testing.T) {
 	})
 	if att == nil || att.Model != "qwen/qwen3.8-27b" {
 		t.Fatalf("attachment model = %#v, want qwen/qwen3.8-27b", att)
+	}
+}
+
+func TestGroqVisionApproximateBase64SizeLimit(t *testing.T) {
+	encoded := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxBase64VisionBytes+1))
+	service := &Service{}
+	_, _, err := service.dispatchAttachment(context.Background(), &attachment{
+		Kind:   "image",
+		Base64: encoded,
+	}, []session.Message{{Role: "user", Content: "describe"}}, "describe")
+	if err == nil || !strings.Contains(err.Error(), "يتجاوز حد Groq للصور") {
+		t.Fatalf("error = %v, want existing approximate 4MB vision limit", err)
 	}
 }

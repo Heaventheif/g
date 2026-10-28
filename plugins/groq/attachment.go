@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	attachmentutil "sunkenbot/internal/attachment"
 	"sunkenbot/internal/netguard"
 	"sunkenbot/internal/session"
 	"sunkenbot/internal/strutil"
@@ -45,6 +46,12 @@ const (
 	maxAttachmentBytes   = 20 * 1024 * 1024 // 20MB — حد Groq لجلب الروابط (URL)
 	maxBase64VisionBytes = 4 * 1024 * 1024  // 4MB  — حد Groq لصور base64 (يُعيد 413 إذا تجاوز)
 )
+
+// estimateBase64DecodedLen retains the existing approximate check for image
+// data that Groq receives unchanged as a data URI.
+func estimateBase64DecodedLen(encoded string) int {
+	return attachmentutil.EstimateStdDecodedLen(encoded)
+}
 
 // fetchBase64 securely downloads an attachment from a URL and converts it to Base64.
 func (s *Service) fetchBase64(ctx context.Context, url string) ([]byte, string, error) {

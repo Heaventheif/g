@@ -2,10 +2,14 @@ package gemini
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+
+	"sunkenbot/internal/httpx"
 )
 
 // المفتاح يجب أن يُرسل بترويسة X-goog-api-key ولا يظهر في الـ URL إطلاقاً.
@@ -51,5 +55,33 @@ func TestCallGeminiSTT_NetworkErrorDoesNotLeakKey(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SECRET-KEY") {
 		t.Fatalf("الخطأ يسرّب المفتاح: %v", err)
+	}
+}
+
+func TestHandleGeminiSTTRejectsUnpaddedInputBeforeProvider(t *testing.T) {
+	s := &Service{}
+	_, err := s.handleSTT(context.Background(), STTRequest{AudioBase64: "YQ"})
+	var httpErr *httpx.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Code != http.StatusBadRequest {
+		t.Fatalf("error = %v, want HTTP 400", err)
+	}
+}
+
+func TestHandleGeminiSTTRejectsEmptyDecodedAudio(t *testing.T) {
+	s := &Service{}
+	_, err := s.handleSTT(context.Background(), STTRequest{AudioBase64: "data:audio/wav;name=empty,"})
+	var httpErr *httpx.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Code != http.StatusBadRequest {
+		t.Fatalf("error = %v, want HTTP 400 for empty decoded audio", err)
+	}
+}
+
+func TestHandleGeminiSTTOversizedInput(t *testing.T) {
+	encoded := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxSTTAudioBytes+1))
+	s := &Service{}
+	_, err := s.handleSTT(context.Background(), STTRequest{AudioBase64: encoded})
+	var httpErr *httpx.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("error = %v, want HTTP 413", err)
 	}
 }

@@ -80,6 +80,12 @@ func TestChallengeDetectionIsSpecific(t *testing.T) {
 	if !isChallengePage(`<title>Just a moment...</title>` + strings.Repeat("challenge ", 60)) {
 		t.Fatal("challenge page was not detected")
 	}
+	if !isChallengePage(`<TITLE>VERIFY YOU ARE HUMAN</TITLE>`) {
+		t.Fatal("HTML challenge markers should be matched case-insensitively")
+	}
+	if isChallengePage(strings.Repeat("x", 6000) + ` Just a moment`) {
+		t.Fatal("marker beyond the established 6000-byte sample should not be inspected")
+	}
 }
 
 func TestFetchPageHTTPDoesNotRejectNormalCloudflareAsset(t *testing.T) {

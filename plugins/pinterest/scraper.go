@@ -215,31 +215,24 @@ func navigateWithRetry(ctx context.Context, u string, timeout time.Duration, ret
 // انتهاء المهلة كلاهما يُكملان الكشط بأفضل ما هو متاح، تماماً كما في
 // try/catch الأصلي الذي يُعيد true عند أي استثناء أثناء الفحص).
 func waitForChallengeToClear(ctx context.Context, maxWait time.Duration, markers []string) {
-	deadline := time.Now().Add(maxWait)
-	for time.Now().Before(deadline) {
+	_ = waitForChallengeToClearWithProbe(ctx, maxWait, markers, func(ctx context.Context) (browser.ChallengeObservation, error) {
 		var title, body string
-		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		errTitle := chromedp.Run(checkCtx, chromedp.Title(&title))
-		if errTitle == nil {
-			_ = chromedp.Run(checkCtx, chromedp.Evaluate(`document.body ? document.body.innerText : ''`, &body))
+		if err := chromedp.Run(ctx, chromedp.Title(&title)); err != nil {
+			return browser.ChallengeObservation{}, err
 		}
-		cancel()
-		if errTitle != nil {
-			return // الصفحة تغيّرت أثناء الفحص — على الأغلب انتقلنا فعلاً
-		}
-		combined := strings.ToLower(title + " " + body)
-		found := false
-		for _, m := range markers {
-			if strings.Contains(combined, m) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return
-		}
-		sleepCtx, sleepCancel := context.WithTimeout(ctx, 3*time.Second)
-		_ = chromedp.Run(sleepCtx, chromedp.Sleep(2*time.Second))
-		sleepCancel()
-	}
+		// كالسلوك السابق، تعذّر قراءة body لا يبطل قراءة العنوان الناجحة.
+		_ = chromedp.Run(ctx, chromedp.Evaluate(`document.body ? document.body.innerText : ''`, &body))
+		return browser.ChallengeObservation{Text: title + " " + body}, nil
+	})
+}
+
+func waitForChallengeToClearWithProbe(ctx context.Context, maxWait time.Duration, markers []string, probe browser.ChallengeProbe) error {
+	return browser.WaitForChallengeClearWithOptions(ctx, browser.ChallengeWaitOptions{
+		Markers:      markers,
+		Timeout:      maxWait,
+		CheckTimeout: 3 * time.Second,
+		PollInterval: 2 * time.Second,
+		ProbeError:   browser.ProbeErrorClear,
+		Probe:        probe,
+	})
 }

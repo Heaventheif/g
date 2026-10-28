@@ -36,23 +36,24 @@ const (
 // السابق: يفحص عنوان الصفحة كل ثانية حتى deadline، بحثاً عن زوال
 // "Just a moment" من العنوان.
 func waitForCloudflareTitle(ctx context.Context, maxWaitS int) bool {
-	for range maxWaitS {
+	return waitForCloudflareTitleWithProbe(ctx, time.Duration(maxWaitS)*time.Second, func(ctx context.Context) (browser.ChallengeObservation, error) {
 		var title string
-		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		err := chromedp.Run(checkCtx, chromedp.Title(&title))
-		cancel()
-		if err == nil && !strings.Contains(title, "Just a moment") {
-			return true
-		}
-		sleepCtx, sleepCancel := context.WithTimeout(ctx, 2*time.Second)
-		_ = chromedp.Run(sleepCtx, chromedp.Sleep(1*time.Second))
-		sleepCancel()
-	}
-	var title string
-	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	err := chromedp.Run(checkCtx, chromedp.Title(&title))
-	cancel()
-	return err == nil && !strings.Contains(title, "Just a moment")
+		err := chromedp.Run(ctx, chromedp.Title(&title))
+		return browser.ChallengeObservation{Text: title}, err
+	}) == nil
+}
+
+func waitForCloudflareTitleWithProbe(ctx context.Context, timeout time.Duration, probe browser.ChallengeProbe) error {
+	return browser.WaitForChallengeClearWithOptions(ctx, browser.ChallengeWaitOptions{
+		Markers:       []string{"Just a moment"},
+		Timeout:       timeout,
+		CheckTimeout:  2 * time.Second,
+		PollInterval:  time.Second,
+		CaseSensitive: true,
+		ProbeError:    browser.ProbeErrorRetry,
+		FinalCheck:    true,
+		Probe:         probe,
+	})
 }
 
 const extractImgSrcsJS = `

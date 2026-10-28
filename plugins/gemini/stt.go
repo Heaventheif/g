@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 
+	"sunkenbot/internal/attachment"
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/netguard"
 	"sunkenbot/internal/strutil"
@@ -144,7 +145,10 @@ func (s *Service) handleSTT(ctx context.Context, req STTRequest) (STTResponse, e
 		}
 		raw = fetched
 	case strings.TrimSpace(req.AudioBase64) != "":
-		decoded, err := decodeAudioBase64(req.AudioBase64)
+		decoded, err := attachment.ParseAudioBase64(req.AudioBase64, attachment.ParseOptions{
+			DataURI:  attachment.DataURIThroughFirstComma,
+			Alphabet: attachment.StdPaddedOnly,
+		})
 		if err != nil {
 			return STTResponse{}, &httpx.HTTPError{
 				Code: http.StatusBadRequest,
@@ -188,13 +192,6 @@ func (s *Service) handleSTT(ctx context.Context, req STTRequest) (STTResponse, e
 	}
 
 	return STTResponse{Transcript: transcript, Model: sttModel}, nil
-}
-
-func decodeAudioBase64(s string) ([]byte, error) {
-	if idx := strings.Index(s, ","); idx != -1 && strings.HasPrefix(s, "data:") {
-		s = s[idx+1:]
-	}
-	return base64.StdEncoding.DecodeString(s)
 }
 
 // extractGoogleErrorMessage — مشترك بين stt.go وtts.go

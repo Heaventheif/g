@@ -2,10 +2,14 @@ package gemini
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+
+	"sunkenbot/internal/httpx"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -59,5 +63,28 @@ func TestCallGeminiVisionRetries503ThenUsesFreeFallback(t *testing.T) {
 	}
 	if requestCount != maxGeminiVisionAttempts+1 {
 		t.Fatalf("expected %d API calls, got %d", maxGeminiVisionAttempts+1, requestCount)
+	}
+}
+
+func TestHandleGeminiVisionRejectsEmptyAndMalformedBase64(t *testing.T) {
+	for _, input := range []string{"data:image/png;base64,", "QU JD"} {
+		t.Run(input, func(t *testing.T) {
+			s := &Service{}
+			_, err := s.handleVision(context.Background(), VisionRequest{ImageBase64: input})
+			var httpErr *httpx.HTTPError
+			if !errors.As(err, &httpErr) || httpErr.Code != http.StatusBadRequest {
+				t.Fatalf("error = %v, want HTTP 400", err)
+			}
+		})
+	}
+}
+
+func TestHandleGeminiVisionOversizedImage(t *testing.T) {
+	encoded := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxVisionImageBytes+1))
+	s := &Service{}
+	_, err := s.handleVision(context.Background(), VisionRequest{ImageBase64: encoded})
+	var httpErr *httpx.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("error = %v, want HTTP 413", err)
 	}
 }

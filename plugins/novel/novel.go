@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 
+	"sunkenbot/internal/cache"
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/plugins"
 )
@@ -41,13 +42,15 @@ const Description = "جلب فصول الروايات من Freewebnovel و Novel
 type Service struct {
 	client *http.Client
 
-	cacheMu    sync.Mutex
-	cache      map[string]cacheItem
-	cacheOrder []string // لتتبّع ترتيب الإدخال (لمحاكاة next(iter(dict)) في بايثون)
+	cacheMu sync.Mutex
+	cache   *cache.Cache[string, map[string]any]
 }
 
 func New(client *http.Client) *Service {
-	return &Service{client: client, cache: map[string]cacheItem{}}
+	return &Service{
+		client: client,
+		cache:  cache.New[string, map[string]any](cacheMaxSize, cache.FIFO, cacheTTL),
+	}
 }
 
 func (s *Service) Name() string { return "novel" }

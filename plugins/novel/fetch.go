@@ -8,7 +8,6 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -37,16 +36,11 @@ func setBrowserHeaders(req *http.Request) {
 // ─── جلب الصفحة عبر HTTP ────────────────────────────────────────
 
 func isChallengePage(pageHTML string) bool {
-	sample := strings.ToLower(pageHTML)
+	sample := pageHTML
 	if len(sample) > 6000 {
 		sample = sample[:6000]
 	}
-	for _, marker := range []string{"just a moment", "checking your browser", "cf-chl-", "challenge-platform", "verify you are human", "attention required | cloudflare"} {
-		if strings.Contains(sample, marker) {
-			return true
-		}
-	}
-	return false
+	return browser.HasChallengeMarker(sample, []string{"just a moment", "checking your browser", "cf-chl-", "challenge-platform", "verify you are human", "attention required | cloudflare"}, false)
 }
 
 func (s *Service) fetchPageHTTP(ctx context.Context, url string) string {

@@ -17,11 +17,11 @@ package gemini
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"sunkenbot/internal/attachment"
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/netguard"
 	"sunkenbot/internal/strutil"
@@ -47,19 +47,6 @@ func guessImageMime(ext string) string {
 		return m
 	}
 	return "image/jpeg"
-}
-
-// detectMimeFromBase64 — يحاول قراءة الـ mime من data URI prefix
-// مثال: "data:image/png;base64,..." → "image/png"
-func detectMimeFromBase64(s string) (string, string) {
-	if strings.HasPrefix(s, "data:") {
-		if idx := strings.Index(s, ";base64,"); idx != -1 {
-			mime := s[5:idx]
-			data := s[idx+8:]
-			return mime, data
-		}
-	}
-	return "", s
 }
 
 // ─── HTTP handler ──────────────────────────────────────────────────
@@ -114,21 +101,19 @@ func (s *Service) handleVision(ctx context.Context, req VisionRequest) (VisionRe
 		mimeType = guessImageMime(ext)
 
 	case strings.TrimSpace(req.ImageBase64) != "":
-		detectedMime, cleanB64 := detectMimeFromBase64(req.ImageBase64)
-		decoded, err := base64.StdEncoding.DecodeString(cleanB64)
+		image, err := attachment.ParseImageBase64(req.ImageBase64, attachment.ParseOptions{
+			DataURI:  attachment.DataURIBase64Only,
+			Alphabet: attachment.StdPaddedOrRaw,
+		})
 		if err != nil {
-			// جرّب RawStdEncoding (بدون padding)
-			decoded, err = base64.RawStdEncoding.DecodeString(cleanB64)
-			if err != nil {
-				return VisionResponse{}, &httpx.HTTPError{
-					Code: http.StatusBadRequest,
-					Body: map[string]any{"error": "image_base64 غير صالح"},
-				}
+			return VisionResponse{}, &httpx.HTTPError{
+				Code: http.StatusBadRequest,
+				Body: map[string]any{"error": "image_base64 غير صالح"},
 			}
 		}
-		rawImage = decoded
-		if detectedMime != "" {
-			mimeType = detectedMime
+		rawImage = image.Data
+		if image.MIME != "" {
+			mimeType = image.MIME
 		} else {
 			mimeType = guessImageMime(req.Ext)
 		}

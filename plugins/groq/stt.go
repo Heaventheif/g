@@ -3,7 +3,6 @@ package groq
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	internalattachment "sunkenbot/internal/attachment"
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/netguard"
 	"sunkenbot/internal/strutil"
@@ -47,13 +47,19 @@ func (s *Service) handleSTT(ctx context.Context, body map[string]any) (map[strin
 			err = fmt.Errorf("رابط الصوت مرفوض أو تعذّر جلبه: %w", err)
 		}
 	} else {
-		raw, err = base64.StdEncoding.DecodeString(att.Base64)
+		raw, err = internalattachment.ParseAudioBase64(att.Base64, internalattachment.ParseOptions{
+			DataURI:  internalattachment.DataURINone,
+			Alphabet: internalattachment.StdPaddedOnly,
+		})
 		if err == nil && len(raw) > maxSTTBytes {
 			err = fmt.Errorf("حجم الصوت يتجاوز 25MB")
 		}
 	}
 	if err != nil {
 		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": "تعذّر قراءة الملف الصوتي: " + strutil.Truncate(err.Error(), 180)}}
+	}
+	if len(raw) == 0 {
+		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": "الملف الصوتي فارغ"}}
 	}
 
 	language := strutil.StringOr(body["language"], "ar")

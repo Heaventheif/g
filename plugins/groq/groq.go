@@ -4,7 +4,6 @@ package groq
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -209,7 +208,7 @@ func (s *Service) dispatchAttachment(ctx context.Context, att *attachment, messa
 
 		case att.Base64 != "":
 			// التحقق من الحجم قبل الإرسال — Groq يُعيد 413 إذا تجاوز 4MB
-			rawSize := base64.StdEncoding.DecodedLen(len(att.Base64))
+			rawSize := estimateBase64DecodedLen(att.Base64)
 			if rawSize > maxBase64VisionBytes {
 				return "", "", fmt.Errorf(
 					"حجم الصورة (~%dMB) يتجاوز حد Groq للصور (4MB). أرسل رابط URL بدلاً من base64",

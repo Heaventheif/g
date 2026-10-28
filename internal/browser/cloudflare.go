@@ -113,23 +113,18 @@ func Await(ctx context.Context, opts CloudflareOptions) error {
 }
 
 func awaitWith(parent context.Context, opts CloudflareOptions, probe func(context.Context) (probeResult, error)) error {
-	ctx, cancel := context.WithTimeout(parent, opts.Timeout)
-	defer cancel()
-	for {
-		checkCtx, checkCancel := context.WithTimeout(ctx, opts.CheckTimeout)
-		res, err := probe(checkCtx)
-		checkCancel()
-		// خطأ الفحص (تنقّل جارٍ، سياق مُدمَّر...) = ما زال غير جاهز، نعيد المحاولة.
-		if err == nil && !res.challengeActive(opts) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			if perr := parent.Err(); perr != nil {
-				return perr
-			}
-			return fmt.Errorf("لم يُحلّ تحدي Cloudflare خلال المهلة")
-		case <-time.After(time.Duration(200+rand.Intn(400)) * time.Millisecond):
-		}
+	if opts.Timeout <= 0 || opts.CheckTimeout <= 0 || len(opts.TitleMarkers) == 0 {
+		opts = opts.withDefaults()
 	}
+	return WaitForChallengeClearWithOptions(parent, ChallengeWaitOptions{
+		Timeout:      opts.Timeout,
+		CheckTimeout: opts.CheckTimeout,
+		NextInterval: func() time.Duration { return time.Duration(200+rand.Intn(400)) * time.Millisecond },
+		ProbeError:   ProbeErrorRetry,
+		TimeoutError: fmt.Errorf("لم يُحلّ تحدي Cloudflare خلال المهلة"),
+		Probe: func(ctx context.Context) (ChallengeObservation, error) {
+			res, err := probe(ctx)
+			return ChallengeObservation{Active: res.challengeActive(opts)}, err
+		},
+	})
 }
