@@ -38,21 +38,6 @@ import (
 
 const defaultPort = "7860"
 
-// descriptions يقابل وصف كل خدمة (كان description في registry.Result
-// سابقاً) — يبقى منفصلاً عن عقد plugins.Service عمداً (الواجهة تحتوي فقط
-// Name/Routes، راجع internal/plugins) بدل توسيعها بميثود Description()
-// لخدمة عرض بحت في endpoint واحد.
-var descriptions = map[string]string{
-	"chess":        chess.Description,
-	"comic":        comic.Description,
-	"gemini":       gemini.Description,
-	"groq":         groq.Description,
-	"manga_bridge": mangabridge.Description,
-	"novel":        novel.Description,
-	"ping":         ping.Description,
-	"pinterest":    pinterest.Description,
-}
-
 // services يبني كل الخدمات باعتمادياتها الصريحة. هذا الموضع — وليس كل
 // حزمة plugin بمفردها — هو المكان الوحيد الذي يقرر أي http.Client يُمرَّر
 // لأي خدمة (راجع جدول قرار http.Client في برومبت الترحيل لسبب كل
@@ -76,18 +61,21 @@ func services() []plugins.Service {
 	}
 }
 
-// checkDescriptions يتأكد أن لكل خدمة مسجّلة وصفاً في descriptions — نسيانه
-// كان يمرّ بصمت (وصف فارغ في GET /) بينما نسيان سطر في services() يُكتشف
-// وقت الترجمة؛ هذا الفحص يغلق الفجوة الثانية بفشل بدء تشغيل واضح.
-func checkDescriptions(svcs []plugins.Service, descs map[string]string) error {
+// checkDescriptions يتأكد أن كل خدمة تسجّل وصفها عبر الواجهة الاختيارية؛
+// لا يوسّع هذا عقد plugins.Service الأساسي.
+func checkDescriptions(svcs []plugins.Service) error {
 	var missing []string
 	for _, svc := range svcs {
-		if descs[svc.Name()] == "" {
+		description := ""
+		if d, ok := svc.(interface{ Description() string }); ok {
+			description = d.Description()
+		}
+		if strings.TrimSpace(description) == "" {
 			missing = append(missing, svc.Name())
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("خدمات بلا وصف في descriptions: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("خدمات بلا Description() string: %s", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -109,10 +97,14 @@ func register(mux *http.ServeMux, svcs []plugins.Service) map[string]any {
 		for _, rt := range routes {
 			mux.HandleFunc(rt.Method+" "+rt.Pattern, rt.Handler)
 		}
+		description := ""
+		if d, ok := svc.(interface{ Description() string }); ok {
+			description = d.Description()
+		}
 		results[svc.Name()] = map[string]any{
 			"status":       "loaded",
 			"routes_added": len(routes),
-			"description":  descriptions[svc.Name()],
+			"description":  description,
 		}
 		log.Printf("[%s] ✅ محمَّل — %d route(s) مضافة", svc.Name(), len(routes))
 	}
@@ -160,7 +152,7 @@ func main() {
 		log.Fatal(err)
 	}
 	svcs := services()
-	if err := checkDescriptions(svcs, descriptions); err != nil {
+	if err := checkDescriptions(svcs); err != nil {
 		log.Fatal(err)
 	}
 	srv := &http.Server{

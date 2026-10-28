@@ -17,6 +17,10 @@ func (fakeSvc) Routes() []plugins.Route {
 	}}}
 }
 
+type describedFakeSvc struct{ fakeSvc }
+
+func (describedFakeSvc) Description() string { return "وصف" }
+
 func do(h http.Handler, method, path, token string) int {
 	req := httptest.NewRequest(method, path, nil)
 	if token != "" {
@@ -60,11 +64,22 @@ func TestListenPort(t *testing.T) {
 
 func TestCheckDescriptions(t *testing.T) {
 	svcs := []plugins.Service{fakeSvc{}}
-	if err := checkDescriptions(svcs, map[string]string{}); err == nil {
+	if err := checkDescriptions(svcs); err == nil {
 		t.Error("خدمة بلا وصف يجب أن تفشل")
 	}
-	if err := checkDescriptions(svcs, map[string]string{"fake": "وصف"}); err != nil {
+	if err := checkDescriptions([]plugins.Service{describedFakeSvc{}}); err != nil {
 		t.Errorf("خدمة بوصف: %v", err)
+	}
+}
+
+func TestRegisterUsesDescriptionMethod(t *testing.T) {
+	results := register(http.NewServeMux(), []plugins.Service{describedFakeSvc{}})
+	pluginResult, ok := results["fake"].(map[string]any)
+	if !ok {
+		t.Fatalf("registration result = %#v", results["fake"])
+	}
+	if got := pluginResult["description"]; got != "وصف" {
+		t.Fatalf("description = %v, want value from Description()", got)
 	}
 }
 
