@@ -45,7 +45,13 @@ go test ./plugins/chess        # perft + مطابقة python-chess (testdata/pos
 
 ## إضافة خدمة جديدة
 
-حزمة جديدة تحت `plugins/` تلتزم بعقد `plugins.Service` (`Name()` + `Routes()`) + سطر واحد في `services()` داخل `main.go` وسطر في `descriptions`. راجع `plugins/ping` كمثال.
+حزمة جديدة تحت `plugins/` تلتزم بعقد `plugins.Service` (`Name()` + `Routes()`)، وتنفّذ `Description() string`، ثم أضفها إلى `services()` في `main.go`. راجع `plugins/ping` كمثال.
+
+## قيود معمارية
+
+- **لا imports بين plugins:** لا تستورد حزمة تحت `plugins/` حزمةً أخرى تحته؛ انقل التنفيذ المشترك إلى `internal/`. يفرض `internal/plugins/import_boundary_test.go` هذه القاعدة آلياً.
+- **الأخطاء:** أعد أخطاء handlers عبر `*httpx.HTTPError` مع رمز HTTP وجسم الاستجابة المقصودين؛ لا تُرجع خرائط خطأ أو أخطاء خاماً من handler.
+- **أجسام JSON:** سجّل كل endpoint يستقبل JSON عبر `httpx.WrapJSON` أو `httpx.WrapJSONLimit`. استخدم `httpx.Handle` للمسارات التي لا تستقبل جسماً JSON فقط.
 
 ## خريطة الملفات
 
@@ -53,7 +59,10 @@ go test ./plugins/chess        # perft + مطابقة python-chess (testdata/pos
 
 | الحزمة | الملفات |
 |---|---|
-| `internal/browser` | `browser.go` (إعداد/User-Agent) · `stealth.go` · `behavior.go` · `cloudflare.go` · `scrape.go` |
+| `internal/attachment` | `base64.go` (سياسات فك Base64 للصورة والصوت) |
+| `internal/browser` | `browser.go` (إعداد/User-Agent) · `stealth.go` · `behavior.go` · `cloudflare.go` · `wait.go` · `scrape.go` |
+| `internal/cache` | `cache.go` (مخزن generic بسياسَتي LRU/FIFO وTTL اختياري) |
+| `internal/plugins` | `route.go` · `import_boundary_test.go` |
 | `internal/tts` | `tts.go` (Orpheus العربي المشترك بين الخدمات) |
 | `plugins/chess` | `chess.go` (المسار) · `position.go` · `moves.go` · `attacks.go` · `outcome.go` · `engine.go` · `lichess.go` · `cache.go` · `render.go` · `png.go` · `config.go` |
 | `plugins/mangabridge` | `mangabridge.go` (المسارات) · `job.go` · `scraper.go` · `images.go` · `validation.go` |
@@ -69,7 +78,7 @@ make check     # تنسيق + vet + اختبارات (نفس بوابة CI)
 make run       # تشغيل محلي
 ```
 
-- **حدود الحزم:** لا تستورد أي حزمة تحت `plugins/` حزمة أخرى تحت `plugins/` (بما فيها Gemini وGroq). ضع التنفيذ المشترك في `internal/`؛ ويفرض `internal/plugins/import_boundary_test.go` هذا الحد آلياً. تشمل الحزم المشتركة `httpx` و`strutil` و`netguard` و`keyrotate` و`session` و`tts`.
+- **المشترك:** ضع الأدوات القابلة لإعادة الاستخدام في `internal/` مثل `httpx` و`strutil` و`netguard` و`keyrotate` و`session` و`attachment` و`browser` و`cache` و`tts`.
 - **النصوص:** استعمل `strutil.Truncate` لا `s[:n]` (الأخيرة تقطع الحروف العربية في منتصفها).
 - **الإيقاف السليم:** إن كانت خدمتك تملك موارد (عمليات، اتصالات) فأضف `Close() error` — يستدعيه `main` تلقائياً عند SIGTERM عبر `io.Closer` دون تغيير عقد `plugins.Service`.
 - **النشر:** كل push على `main` يشغّل `test` أولاً، ولا يُدفع إلى HF إلا إن نجح.
