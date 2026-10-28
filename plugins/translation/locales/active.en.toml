@@ -1,0 +1,6 @@
+[HelloPerson]
+other = "Hello, {{.Name}}!"
+
+[ItemCount]
+one = "{{.Count}} item"
+other = "{{.Count}} items"

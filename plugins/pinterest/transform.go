@@ -22,6 +22,7 @@ type rawPin struct {
 // ─── تحويل rawPin -> imageResult (منطق pinToImage/originalFromSrcset/convertQuality) ─
 
 var pinimgThumbRe = regexp.MustCompile(`https://i\.pinimg\.com/(?:\d+x|originals|736x|474x|236x)/`)
+
 // pinimgSizeRe: مقاطع الحجم القابلة للاستبدال في convertQuality (ثابت — يُجمَّع مرة واحدة).
 var pinimgSizeRe = regexp.MustCompile(`https://i\.pinimg\.com/(?:originals|736x|474x|236x)/`)
 var pinimgOriginalInSrcsetRe = regexp.MustCompile(`(https://i\.pinimg\.com/originals/[^ \s]+\.(?:jpg|jpeg|png|webp))`)

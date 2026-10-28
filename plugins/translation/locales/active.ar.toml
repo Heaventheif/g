@@ -1,0 +1,10 @@
+[HelloPerson]
+other = "مرحبًا، {{.Name}}!"
+
+[ItemCount]
+zero = "لا توجد عناصر"
+one = "عنصر واحد"
+two = "عنصران"
+few = "{{.Count}} عناصر"
+many = "{{.Count}} عنصرًا"
+other = "{{.Count}} عنصر"

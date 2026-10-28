@@ -247,4 +247,3 @@ func toGeminiContents(messages []session.Message) []map[string]any {
 	}
 	return contents
 }
-
