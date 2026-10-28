@@ -104,6 +104,8 @@ func TestFetchPageBrowserLoadsLocalReaderPage(t *testing.T) {
 	if err != nil {
 		t.Skip("Chromium is not installed")
 	}
+	// بعض مشغّلات CI تضبط عنوان D-Bus غير صالح؛ Chromium headless لا يحتاج جلسة D-Bus.
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
 	t.Setenv("NOVEL_CHROMIUM_PATH", chromiumPath)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
