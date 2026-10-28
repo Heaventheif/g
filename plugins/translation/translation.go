@@ -27,7 +27,7 @@ import (
 var localeFiles embed.FS
 
 const (
-	Description = "ترجمة واجهة المستخدم إلى العربية والإنجليزية وترجمة النصوص عبر Google Translate أو DeepL"
+	Description = "ترجمة واجهة المستخدم إلى العربية والإنجليزية وترجمة النصوص بلغات متعددة"
 	maxBodySize = 1 << 20
 )
 
@@ -180,15 +180,17 @@ func (s *Service) translateHandler(c *fiber.Ctx) error {
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
-	req.To = strings.ToLower(strings.TrimSpace(req.To))
+	req.To = strings.TrimSpace(req.To)
 	req.From = strings.ToLower(strings.TrimSpace(req.From))
 	req.Provider = strings.ToLower(strings.TrimSpace(req.Provider))
 	if req.Text == "" || req.To == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "text and to are required"})
 	}
-	if req.To != "ar" && req.To != "en" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "to must be ar or en"})
+	targetLanguage, err := language.Parse(req.To)
+	if err != nil || targetLanguage == language.Und {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "to must be a valid language code, such as ar, en, fr, or zh-CN"})
 	}
+	req.To = targetLanguage.String()
 	if req.From != "" && req.From != "auto" && req.From != "ar" && req.From != "en" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "from must be auto, ar, or en"})
 	}
@@ -206,7 +208,6 @@ func (s *Service) translateHandler(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var result *translator.Translated
-	var err error
 	if req.Provider == "go-translate" || req.Provider == "microsoft" {
 		result, err = backend.Translate(ctx, req.Text, req.From, req.To)
 	} else {

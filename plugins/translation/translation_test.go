@@ -116,3 +116,28 @@ func TestMicrosoftRequiresSourceLanguage(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
 }
+
+func TestTranslateAcceptsAdditionalLanguageCodes(t *testing.T) {
+	s := newTestService(t)
+	for _, target := range []string{"fr", "zh-CN"} {
+		response := invokeRoute(s, http.MethodPost, "/translate", `{"text":"Hello","to":"`+target+`","provider":"go-translate"}`, map[string]string{"Content-Type": "application/json"})
+		if response.Code != http.StatusOK {
+			t.Fatalf("target %q: status = %d, want %d; body=%s", target, response.Code, http.StatusOK, response.Body.String())
+		}
+		var result translateResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatalf("target %q: decode response: %v", target, err)
+		}
+		if result.To != target || result.Provider != "go-translate" {
+			t.Fatalf("target %q: unexpected response: %+v", target, result)
+		}
+	}
+}
+
+func TestTranslateRejectsMalformedTargetLanguage(t *testing.T) {
+	s := newTestService(t)
+	response := invokeRoute(s, http.MethodPost, "/translate", `{"text":"Hello","to":"bad_code","provider":"go-translate"}`, map[string]string{"Content-Type": "application/json"})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
