@@ -1,4 +1,4 @@
-package groq
+package tts
 
 import (
 	"strings"
@@ -19,9 +19,8 @@ func assertChunksWithinLimit(t *testing.T, chunks []string) {
 }
 
 func TestSplitForTTS_DelimiterAtLastAllowedIndex(t *testing.T) {
-	// فاصل عند الفهرس 189 ⇒ cut = 190 == ttsMaxChars؛ يجب اعتباره فاصلاً صالحاً
-	// لا «لم يُعثر على فاصل» (وإلا يضيع الفاصل الأفضل ويستمر البحث نزولاً).
-	first := strings.Repeat("a", 100) + " " + strings.Repeat("a", 88) // 189 runes
+	// فاصل عند الفهرس 189 ⇒ cut = 190 == ttsMaxChars؛ يجب اعتباره فاصلاً صالحاً.
+	first := strings.Repeat("a", 100) + " " + strings.Repeat("a", 88)
 	text := first + " " + strings.Repeat("b", 50)
 	chunks := splitForTTS(text)
 	assertChunksWithinLimit(t, chunks)
@@ -31,7 +30,6 @@ func TestSplitForTTS_DelimiterAtLastAllowedIndex(t *testing.T) {
 }
 
 func TestSplitForTTS_PunctuationAtIndex190NotOverLimit(t *testing.T) {
-	// off-by-one: الحلقة كانت تبدأ من الفهرس 190 فتُنتج مقطعاً من 191 rune.
 	text := strings.Repeat("a", ttsMaxChars) + "." + strings.Repeat("b", 10)
 	chunks := splitForTTS(text)
 	assertChunksWithinLimit(t, chunks)

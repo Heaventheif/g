@@ -1,4 +1,4 @@
-package groq
+package tts
 
 import (
 	"bytes"
@@ -29,6 +29,10 @@ func TestOrpheusArabicSaudiModelAndVoices(t *testing.T) {
 		if got[i] != voice {
 			t.Errorf("voice[%d] = %q, want %q", i, got[i], voice)
 		}
+	}
+	got[0] = "modified"
+	if OrpheusArabicVoices()[0] != want[0] {
+		t.Fatal("OrpheusArabicVoices must return a defensive copy")
 	}
 }
 

@@ -54,6 +54,7 @@ go test ./plugins/chess        # perft + مطابقة python-chess (testdata/pos
 | الحزمة | الملفات |
 |---|---|
 | `internal/browser` | `browser.go` (إعداد/User-Agent) · `stealth.go` · `behavior.go` · `cloudflare.go` · `scrape.go` |
+| `internal/tts` | `tts.go` (Orpheus العربي المشترك بين الخدمات) |
 | `plugins/chess` | `chess.go` (المسار) · `position.go` · `moves.go` · `attacks.go` · `outcome.go` · `engine.go` · `lichess.go` · `cache.go` · `render.go` · `png.go` · `config.go` |
 | `plugins/mangabridge` | `mangabridge.go` (المسارات) · `job.go` · `scraper.go` · `images.go` · `validation.go` |
 | `plugins/pinterest` | `pinterest.go` · `scraper.go` · `transform.go` · `ferdev.go` |
@@ -68,7 +69,7 @@ make check     # تنسيق + vet + اختبارات (نفس بوابة CI)
 make run       # تشغيل محلي
 ```
 
-- **قاعدة الحزم:** كل خدمة حزمة مستقلة تحت `plugins/` لا تعرف غيرها؛ المشترك فقط في `internal/` (`httpx` للـ handlers، `strutil` للنصوص، `netguard` لجلب الروابط الآمن، `keyrotate` لتدوير المفاتيح، `session` للجلسات).
+- **حدود الحزم:** لا تستورد أي حزمة تحت `plugins/` حزمة أخرى تحت `plugins/` (بما فيها Gemini وGroq). ضع التنفيذ المشترك في `internal/`؛ ويفرض `internal/plugins/import_boundary_test.go` هذا الحد آلياً. تشمل الحزم المشتركة `httpx` و`strutil` و`netguard` و`keyrotate` و`session` و`tts`.
 - **النصوص:** استعمل `strutil.Truncate` لا `s[:n]` (الأخيرة تقطع الحروف العربية في منتصفها).
 - **الإيقاف السليم:** إن كانت خدمتك تملك موارد (عمليات، اتصالات) فأضف `Close() error` — يستدعيه `main` تلقائياً عند SIGTERM عبر `io.Closer` دون تغيير عقد `plugins.Service`.
 - **النشر:** كل push على `main` يشغّل `test` أولاً، ولا يُدفع إلى HF إلا إن نجح.

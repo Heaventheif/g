@@ -21,18 +21,8 @@ import (
 // Description defines the plugin description.
 const Description = "Groq AI Bot — Flexible Multi-Model Routing (Groq Only)"
 
-const (
-	// systemPrompt sets the default behavior and persona for the AI assistant.
-	systemPrompt = `أنت بوت مساعد ذكي اسمك "Sunken". أجب دائماً باللغة العربية بإيجاز (أقل من 300 كلمة). كن ودوداً ومهذباً. إذا أُرسلت إليك صورة أو صوت أو فيديو فحللها بدقة.`
-	// ttsModel/ttsVoice specify the Groq Orpheus Arabic (Saudi dialect) text-to-speech model.
-	ttsModel = "canopylabs/orpheus-arabic-saudi"
-	ttsVoice = "fahad"
-	// ttsMaxChars is Orpheus's documented per-request input limit; longer replies are split into chunks.
-	ttsMaxChars       = 190
-	ttsMaxAttempts    = 3
-	ttsRetryBaseDelay = 250 * time.Millisecond
-	groqTTSEndpoint   = "https://api.groq.com/openai/v1/audio/speech"
-)
+// systemPrompt sets the default behavior and persona for the AI assistant.
+const systemPrompt = `أنت بوت مساعد ذكي اسمك "Sunken". أجب دائماً باللغة العربية بإيجاز (أقل من 300 كلمة). كن ودوداً ومهذباً. إذا أُرسلت إليك صورة أو صوت أو فيديو فحللها بدقة.`
 
 // Flexible model lists for each command type, ordered by fallback preference.
 var (

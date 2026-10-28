@@ -19,7 +19,7 @@ import (
 
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/strutil"
-	"sunkenbot/plugins/groq"
+	sharedtts "sunkenbot/internal/tts"
 )
 
 const (
@@ -49,7 +49,7 @@ func (t *ttsState) nextVoice() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.voicePool) == 0 {
-		t.voicePool = groq.OrpheusArabicVoices()
+		t.voicePool = sharedtts.OrpheusArabicVoices()
 		rand.Shuffle(len(t.voicePool), func(i, j int) { t.voicePool[i], t.voicePool[j] = t.voicePool[j], t.voicePool[i] })
 	}
 	voice := t.voicePool[len(t.voicePool)-1]
@@ -141,7 +141,7 @@ func (s *Service) callGroqThenPiper(ctx context.Context, text, voice string) ([]
 	if groqVoice == "" {
 		groqVoice = s.tts.nextVoice()
 	}
-	groqB64, groqErr := groq.ArabicTTSWithVoice(ctx, &http.Client{Timeout: 45 * time.Second}, text, groqVoice)
+	groqB64, groqErr := sharedtts.ArabicTTSWithVoice(ctx, &http.Client{Timeout: 45 * time.Second}, text, groqVoice)
 	if groqErr == nil {
 		audio, err := base64.StdEncoding.DecodeString(groqB64)
 		if err == nil && len(audio) > 0 {
@@ -204,9 +204,9 @@ func (s *Service) handleTTS(ctx context.Context, req TTSRequest) (TTSResponse, e
 // GET /gemini/tts/voices
 func (s *Service) handleTTSVoices(r *http.Request) (map[string]any, error) {
 	return map[string]any{
-		"groq_model":           groq.OrpheusArabicModel(),
-		"groq_voices":          groq.OrpheusArabicVoices(),
-		"default_voice":        groq.OrpheusArabicDefaultVoice(),
+		"groq_model":           sharedtts.OrpheusArabicModel(),
+		"groq_voices":          sharedtts.OrpheusArabicVoices(),
+		"default_voice":        sharedtts.OrpheusArabicDefaultVoice(),
 		"piper_fallback_model": piperVoice,
 		"piper_voices":         []string{piperVoice},
 		"pipeline":             "Groq Orpheus Arabic Saudi primary; Piper Arabic fallback",
