@@ -12,6 +12,7 @@
 package chess
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -94,7 +95,7 @@ func (s *Service) Close() error {
 
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
-		{Method: "POST", Pattern: "/process_move", Handler: httpx.Handle(s.handleProcessMove)},
+		{Method: "POST", Pattern: "/process_move", Handler: httpx.WrapJSON(s.handleProcessMove)},
 	}
 }
 
@@ -126,10 +127,9 @@ func winnerLabel(result string) *string {
 	return &w
 }
 
-func (s *Service) handleProcessMove(r *http.Request) (any, error) {
+func (s *Service) handleProcessMove(ctx context.Context, req moveRequest) (any, error) {
 	t0 := time.Now()
-	req, err := httpx.Decode[moveRequest](r)
-	if err != nil || strings.TrimSpace(req.FEN) == "" {
+	if strings.TrimSpace(req.FEN) == "" {
 		return nil, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": "fen مطلوب"}}
 	}
 	difficulty := 10
@@ -148,12 +148,12 @@ func (s *Service) handleProcessMove(r *http.Request) (any, error) {
 	if raw := strings.TrimSpace(req.Move); raw != "" {
 		m, perr := pos.ParseUCI(raw)
 		if perr != nil {
-			return map[string]string{"illegal_move_error": fmt.Sprintf(
-				"❌ صيغة خاطئة: %s\nاستخدم صيغة UCI مثل: e2e4", strings.ToUpper(raw))}, nil
+			return nil, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": fmt.Sprintf(
+				"❌ صيغة خاطئة: %s\nاستخدم صيغة UCI مثل: e2e4", strings.ToUpper(raw))}}
 		}
 		if !pos.IsLegal(m) {
-			return map[string]string{"illegal_move_error": fmt.Sprintf(
-				"❌ نقلة غير قانونية: %s\nمثال صحيح: e2e4 أو e7e8q", strings.ToUpper(raw))}, nil
+			return nil, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": fmt.Sprintf(
+				"❌ نقلة غير قانونية: %s\nمثال صحيح: e2e4 أو e7e8q", strings.ToUpper(raw))}}
 		}
 		next := pos.Apply(m)
 		pos = &next
@@ -173,7 +173,7 @@ func (s *Service) handleProcessMove(r *http.Request) (any, error) {
 
 	// ── نقلة البوت (حتى لو move فارغة: قد يكون البوت هو الأبيض) ──────────────
 	if req.BotMode {
-		if uci := s.engineMove(r, pos, difficulty); uci != "" {
+		if uci := s.engineMove(ctx, pos, difficulty); uci != "" {
 			if m, err := pos.ParseUCI(uci); err == nil && pos.IsLegal(m) {
 				next := pos.Apply(m)
 				pos = &next
@@ -193,8 +193,7 @@ func (s *Service) handleProcessMove(r *http.Request) (any, error) {
 }
 
 // engineMove يجرّب المصادر بالترتيب ويعيد أفضل نقلة UCI متاحة.
-func (s *Service) engineMove(r *http.Request, pos *Position, difficulty int) string {
-	ctx := r.Context()
+func (s *Service) engineMove(ctx context.Context, pos *Position, difficulty int) string {
 	fen := pos.FEN()
 
 	if s.maxLichessMove == 0 || pos.Fullmove() <= s.maxLichessMove {

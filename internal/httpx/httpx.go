@@ -1,6 +1,5 @@
-// Package httpx يوفّر البدائية العامة الوحيدة لكل الـ handlers في هذا
-// المشروع (Handle)، وسكّراً نحوياً فوقها لخدمات JSON in/out البسيطة
-// (WrapJSON) — إلزامي للخدمات الجديدة فقط، غير رجعي على التسعة القديمة.
+// Package httpx يوفّر Handle للمسارات بلا جسم JSON أو ذات المعالجة الخاصة،
+// وWrapJSON كمحلّل محدود وموحّد لكل endpoint يستقبل جسم JSON.
 package httpx
 
 import (
@@ -62,11 +61,9 @@ func IsTooLarge(err error) bool {
 	return errors.As(err, &mbe)
 }
 
-// Handle هي البدائية الوحيدة والعامة لكل route — تعمل بلا فرق لأي شكل:
-// GET بلا جسم، POST بجسم JSON، أو مسار بـ path parameters — لأنها تمرّر
-// *http.Request كاملاً لدالة الـ handler، ولا تفترض شيئاً مسبقاً عن الجسم
-// أو المسار. بدائية واحدة تغطي كل الحالات، بلا ازدواجية "Wrap أحياناً /
-// handler عادي أحياناً".
+// Handle هو الأساس العام للمسارات بلا جسم JSON أو التي تحتاج معالجة خاصة؛
+// ويمرّر *http.Request كاملاً إلى handler. أما المسارات ذات جسم JSON فتستخدم
+// WrapJSON/WrapJSONLimit، اللذين يعتمدان على Handle داخلياً.
 func Handle[Res any](h func(r *http.Request) (Res, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -89,12 +86,9 @@ func Handle[Res any](h func(r *http.Request) (Res, error)) http.HandlerFunc {
 	}
 }
 
-// WrapJSON سكّر نحوي فوق Handle — إلزامي للخدمات الجديدة فقط لأي endpoint
-// بجسم JSON. كل خدمة جديدة تُضاف للمشروع من الآن فصاعداً تستخدم WrapJSON
-// لأي endpoint بجسم JSON، وHandle مباشرة لأي endpoint بلا جسم أو بحاجة
-// لـ path parameters. لا مجال بعد الآن لاختلافات "error" مقابل "detail"
-// أو 400 مقابل 500 كما حدث تاريخياً بين التسعة القدامى — تلك الاختلافات
-// مجمَّدة فقط في القديم (راجع الخدمات المرحَّلة)، ومحظورة في أي شيء جديد.
+// WrapJSON سكّر نحوي فوق Handle — استخدمه لكل endpoint يستقبل جسم JSON.
+// يضمن حدّاً لحجم الجسم واستجابة موحّدة (400 للصيغة غير الصالحة، 413 للتجاوز).
+// استخدم WrapJSONLimit عندما يحتاج endpoint إلى حد مختلف عن الافتراضي.
 func WrapJSON[Req, Res any](h func(ctx context.Context, req Req) (Res, error)) http.HandlerFunc {
 	return WrapJSONLimit(DefaultMaxBodyBytes, h)
 }

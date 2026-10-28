@@ -5,7 +5,6 @@ package groq
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -65,8 +64,8 @@ func (s *Service) Name() string { return "groq" }
 // Routes registers the HTTP endpoints handled by this plugin.
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
-		{Method: "POST", Pattern: "/groq", Handler: httpx.Handle(s.handleGroq)},
-		{Method: "POST", Pattern: "/groq/stt", Handler: httpx.Handle(s.handleSTT)},
+		{Method: "POST", Pattern: "/groq", Handler: httpx.WrapJSON(s.handleGroq)},
+		{Method: "POST", Pattern: "/groq/stt", Handler: httpx.WrapJSONLimit(maxSTTBodyBytes, s.handleSTT)},
 	}
 }
 
@@ -79,17 +78,7 @@ var groqKeys = sync.OnceValue(func() *keyrotate.Manager {
 })
 
 // handleGroq processes incoming HTTP POST requests to the /groq endpoint.
-func (s *Service) handleGroq(r *http.Request) (map[string]any, error) {
-	ctx := r.Context()
-
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		return nil, &httpx.HTTPError{
-			Code: http.StatusBadRequest,
-			Body: map[string]any{"error": strutil.Truncate(err.Error(), 200)},
-		}
-	}
-
+func (s *Service) handleGroq(ctx context.Context, body map[string]any) (map[string]any, error) {
 	_, hasThreadID := body["thread_id"]
 	_, hasPrompt := body["prompt"]
 

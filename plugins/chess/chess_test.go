@@ -62,19 +62,22 @@ func TestProcessMovePlayerOnly(t *testing.T) {
 func TestProcessMoveErrors(t *testing.T) {
 	s := newTestService(t)
 	start := "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-	_, out := post(t, s, `{"fen":"`+start+`","move":"e2e5"}`)
-	if !strings.Contains(out["illegal_move_error"].(string), "غير قانونية") {
+	code, out := post(t, s, `{"fen":"`+start+`","move":"e2e5"}`)
+	if code != http.StatusUnprocessableEntity || !strings.Contains(out["detail"].(string), "غير قانونية") {
 		t.Errorf("%v", out)
 	}
-	_, out = post(t, s, `{"fen":"`+start+`","move":"hello"}`)
-	if !strings.Contains(out["illegal_move_error"].(string), "صيغة خاطئة") {
+	code, out = post(t, s, `{"fen":"`+start+`","move":"hello"}`)
+	if code != http.StatusUnprocessableEntity || !strings.Contains(out["detail"].(string), "صيغة خاطئة") {
 		t.Errorf("%v", out)
 	}
 	if code, _ := post(t, s, `{"fen":"garbage"}`); code != http.StatusBadRequest {
 		t.Errorf("FEN سيئ: code=%d", code)
 	}
-	if code, _ := post(t, s, `{}`); code != http.StatusUnprocessableEntity {
+	if code, out := post(t, s, `{}`); code != http.StatusUnprocessableEntity || out["detail"] != "fen مطلوب" {
 		t.Errorf("fen مفقود: code=%d", code)
+	}
+	if code, out := post(t, s, `{bad`); code != http.StatusBadRequest || out["error"] != "invalid request body" {
+		t.Errorf("JSON غير صالح: code=%d body=%v", code, out)
 	}
 }
 

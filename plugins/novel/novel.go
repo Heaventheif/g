@@ -20,7 +20,6 @@ package novel
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -31,7 +30,6 @@ import (
 
 	"sunkenbot/internal/httpx"
 	"sunkenbot/internal/plugins"
-	"sunkenbot/internal/strutil"
 )
 
 const Description = "جلب فصول الروايات من Freewebnovel و NovelFull مع بديل متصفح مشترك"
@@ -56,7 +54,7 @@ func (s *Service) Name() string { return "novel" }
 
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
-		{Method: "POST", Pattern: "/novel", Handler: httpx.Handle(s.handleGetChapter)},
+		{Method: "POST", Pattern: "/novel", Handler: httpx.WrapJSON(s.handleGetChapter)},
 		{Method: "GET", Pattern: "/novel/sites", Handler: httpx.Handle(s.handleListSites)},
 		{Method: "DELETE", Pattern: "/novel/cache", Handler: httpx.Handle(s.handleClearCache)},
 	}
@@ -240,19 +238,14 @@ func (s *Service) fetchChapter(ctx context.Context, novelName, chapterNum, expli
 
 // ─── HTTP handlers ───────────────────────────────────────────────
 
-func (s *Service) handleGetChapter(r *http.Request) (map[string]any, error) {
-	var body struct {
-		Novel   string `json:"novel"`
-		Chapter any    `json:"chapter"`
-		Site    string `json:"site"`     // اختياري — Freewebnovel افتراضي، أو NovelFull
-		NovelID string `json:"novel_id"` // اختياري — نفس الشيء، يُستخدم الآن كـ slug صريح
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		return nil, &httpx.HTTPError{
-			Code: http.StatusBadRequest,
-			Body: map[string]any{"error": strutil.Truncate(err.Error(), 200)},
-		}
-	}
+type chapterRequest struct {
+	Novel   string `json:"novel"`
+	Chapter any    `json:"chapter"`
+	Site    string `json:"site"`     // اختياري — Freewebnovel افتراضي، أو NovelFull
+	NovelID string `json:"novel_id"` // اختياري — نفس الشيء، يُستخدم الآن كـ slug صريح
+}
+
+func (s *Service) handleGetChapter(ctx context.Context, body chapterRequest) (map[string]any, error) {
 
 	requestedSite, siteOK := normalizeNovelSite(body.Site)
 	if !siteOK {
@@ -282,7 +275,7 @@ func (s *Service) handleGetChapter(r *http.Request) (map[string]any, error) {
 		}
 	}
 
-	result, err := s.fetchChapter(r.Context(), novelName, chapterNum, novelID, requestedSite)
+	result, err := s.fetchChapter(ctx, novelName, chapterNum, novelID, requestedSite)
 	if err != nil {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusNotFound,

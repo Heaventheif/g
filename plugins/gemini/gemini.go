@@ -37,12 +37,12 @@ func (s *Service) Name() string { return "gemini" }
 
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
-		{Method: "POST", Pattern: "/gemini", Handler: httpx.Handle(s.handleGemini)},
+		{Method: "POST", Pattern: "/gemini", Handler: httpx.WrapJSON(s.handleGemini)},
 		{Method: "POST", Pattern: "/gemini/tts", Handler: httpx.WrapJSON(s.handleTTS)},
 		{Method: "GET", Pattern: "/gemini/tts/voices", Handler: httpx.Handle(s.handleTTSVoices)},
 		{Method: "POST", Pattern: "/gemini/stt", Handler: httpx.WrapJSONLimit(maxSTTBodyBytes, s.handleSTT)},
 		// بحث صريح بالإنترنت بدون ذاكرة جلسة
-		{Method: "POST", Pattern: "/gemini/search", Handler: httpx.Handle(s.handleSearch)},
+		{Method: "POST", Pattern: "/gemini/search", Handler: httpx.WrapJSON(s.handleSearch)},
 		// تحليل الصور (multimodal) — gemini-3.6-flash مجاناً
 		{Method: "POST", Pattern: "/gemini/vision", Handler: httpx.WrapJSONLimit(maxVisionBodyBytes, s.handleVision)},
 	}
@@ -50,18 +50,7 @@ func (s *Service) Routes() []plugins.Route {
 
 // ─── HTTP handlers ─────────────────────────────────────────────────
 
-func (s *Service) handleGemini(r *http.Request) (map[string]any, error) {
-	ctx := r.Context()
-
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		// جسم JSON غير صالح خطأ من العميل (400) لا من الخادم.
-		return nil, &httpx.HTTPError{
-			Code: http.StatusBadRequest,
-			Body: map[string]any{"error": strutil.Truncate(err.Error(), 200)},
-		}
-	}
-
+func (s *Service) handleGemini(ctx context.Context, body map[string]any) (map[string]any, error) {
 	_, hasThreadID := body["thread_id"]
 	_, hasPrompt := body["prompt"]
 
@@ -99,13 +88,12 @@ func (s *Service) handleGemini(r *http.Request) (map[string]any, error) {
 
 // handleSearch — endpoint جديد: بحث مباشر بالإنترنت بدون تاريخ محادثة.
 // مثالي لـ .search <سؤال> في بوت الميسنجر.
-func (s *Service) handleSearch(r *http.Request) (map[string]any, error) {
-	ctx := r.Context()
+type searchRequest struct {
+	Query string `json:"query"`
+}
 
-	var body struct {
-		Query string `json:"query"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Query) == "" {
+func (s *Service) handleSearch(ctx context.Context, body searchRequest) (map[string]any, error) {
+	if strings.TrimSpace(body.Query) == "" {
 		return nil, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
 			Body: map[string]any{"error": "query مطلوب"},

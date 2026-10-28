@@ -75,6 +75,26 @@ func TestHandleGroq_MissingBody(t *testing.T) {
 	}
 }
 
+func TestHandleGroq_InvalidJSONUsesSharedBodyError(t *testing.T) {
+	svc := New(http.DefaultClient, http.DefaultClient, nil)
+	req := httptest.NewRequest(http.MethodPost, "/groq", strings.NewReader("{bad"))
+	rec := httptest.NewRecorder()
+	svc.Routes()[0].Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error":"invalid request body"`) {
+		t.Fatalf("status/body = %d %s, want normalized 400", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSTT_InvalidJSONUsesSharedBodyError(t *testing.T) {
+	svc := New(http.DefaultClient, http.DefaultClient, nil)
+	req := httptest.NewRequest(http.MethodPost, "/groq/stt", strings.NewReader("{bad"))
+	rec := httptest.NewRecorder()
+	svc.Routes()[1].Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error":"invalid request body"`) {
+		t.Fatalf("status/body = %d %s, want normalized 400", rec.Code, rec.Body.String())
+	}
+}
+
 func TestVisionModelIsCurrentGroqModel(t *testing.T) {
 	if len(visionModels) != 1 || visionModels[0] != "qwen/qwen3.8-27b" {
 		t.Fatalf("visionModels = %#v, want [qwen/qwen3.8-27b]", visionModels)

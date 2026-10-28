@@ -13,6 +13,7 @@
 package mangabridge
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -65,7 +66,7 @@ func (s *Service) Name() string { return "manga_bridge" }
 
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
-		{Method: "POST", Pattern: "/manga-bridge/jobs", Handler: httpx.Handle(s.handleCreateJob)},
+		{Method: "POST", Pattern: "/manga-bridge/jobs", Handler: httpx.WrapJSONLimit(maxCreateJobBodyBytes, s.handleCreateJob)},
 		{Method: "GET", Pattern: "/manga-bridge/jobs/{job_id}", Handler: httpx.Handle(s.handleGetJob)},
 		{Method: "GET", Pattern: "/manga-bridge/jobs/{job_id}/image/{idx}", Handler: s.handleGetJobImage},
 	}
@@ -86,22 +87,8 @@ type createJobResult struct {
 	Status string `json:"status"`
 }
 
-func (s *Service) handleCreateJob(r *http.Request) (createJobResult, error) {
+func (s *Service) handleCreateJob(_ context.Context, body createJobBody) (createJobResult, error) {
 	s.cleanupOldJobs()
-
-	body, err := httpx.DecodeLimit[createJobBody](r, maxCreateJobBodyBytes)
-	if err != nil {
-		if httpx.IsTooLarge(err) {
-			return createJobResult{}, &httpx.HTTPError{
-				Code: http.StatusRequestEntityTooLarge,
-				Body: map[string]any{"detail": "حجم الطلب كبير جداً"},
-			}
-		}
-		return createJobResult{}, &httpx.HTTPError{
-			Code: http.StatusBadRequest,
-			Body: map[string]any{"detail": "طلب غير صالح"},
-		}
-	}
 
 	manga := strings.TrimSpace(body.Manga)
 	chapter := strings.TrimSpace(body.Chapter)

@@ -5,21 +5,26 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"sunkenbot/internal/httpx"
 )
 
-// جسم JSON غير صالح = خطأ عميل: 400 (كان 500).
+// جسم JSON غير صالح يمر عبر WrapJSON ويعيد خطأ 400 موحداً.
 func TestHandleGemini_InvalidJSONIs400(t *testing.T) {
 	s := &Service{}
 	req := httptest.NewRequest("POST", "/gemini", strings.NewReader("{not json"))
-	_, err := s.handleGemini(req)
-	he, ok := err.(*httpx.HTTPError)
-	if !ok {
-		t.Fatalf("err = %#v، المتوقع *httpx.HTTPError", err)
+	var handler http.Handler
+	for _, route := range s.Routes() {
+		if route.Pattern == "/gemini" {
+			handler = route.Handler
+			break
+		}
 	}
-	if he.Code != http.StatusBadRequest {
-		t.Fatalf("code = %d, want 400", he.Code)
+	if handler == nil {
+		t.Fatal("/gemini route not found")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error":"invalid request body"`) {
+		t.Fatalf("status/body = %d %s, want normalized 400", rec.Code, rec.Body.String())
 	}
 }
 

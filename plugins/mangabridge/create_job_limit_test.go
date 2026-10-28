@@ -5,25 +5,23 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"sunkenbot/internal/httpx"
 )
 
-func TestHandleCreateJob_RejectsOversizedBody(t *testing.T) {
+func TestCreateJobRoute_RejectsOversizedBody(t *testing.T) {
 	body := `{"manga":"` + strings.Repeat("a", maxCreateJobBodyBytes*2) + `","chapter":"1"}`
 	req := httptest.NewRequest("POST", "/manga-bridge/jobs", strings.NewReader(body))
-	_, err := New().handleCreateJob(req)
-	he, ok := err.(*httpx.HTTPError)
-	if !ok || he.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("err = %#v، المتوقع HTTPError 413", err)
+	rec := httptest.NewRecorder()
+	New().Routes()[0].Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), `"error":"request body too large"`) {
+		t.Fatalf("status/body = %d %s, want normalized 413", rec.Code, rec.Body.String())
 	}
 }
 
-func TestHandleCreateJob_InvalidJSONIs400(t *testing.T) {
+func TestCreateJobRoute_InvalidJSONIsNormalized400(t *testing.T) {
 	req := httptest.NewRequest("POST", "/manga-bridge/jobs", strings.NewReader("{bad"))
-	_, err := New().handleCreateJob(req)
-	he, ok := err.(*httpx.HTTPError)
-	if !ok || he.Code != http.StatusBadRequest {
-		t.Fatalf("err = %#v، المتوقع HTTPError 400", err)
+	rec := httptest.NewRecorder()
+	New().Routes()[0].Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error":"invalid request body"`) {
+		t.Fatalf("status/body = %d %s, want normalized 400", rec.Code, rec.Body.String())
 	}
 }

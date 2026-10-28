@@ -7,7 +7,7 @@
 package pinterest
 
 import (
-	"encoding/json"
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -46,7 +46,7 @@ func (s *Service) Name() string { return "pinterest" }
 
 func (s *Service) Routes() []plugins.Route {
 	return []plugins.Route{
-		{Method: "POST", Pattern: "/pinterest", Handler: httpx.Handle(s.handleSearch)},
+		{Method: "POST", Pattern: "/pinterest", Handler: httpx.WrapJSON(s.handleSearch)},
 		{Method: "GET", Pattern: "/pinterest/health", Handler: httpx.Handle(s.handleHealth)},
 	}
 }
@@ -98,16 +98,8 @@ func (s *Service) handleHealth(r *http.Request) (map[string]any, error) {
 	}, nil
 }
 
-func (s *Service) handleSearch(r *http.Request) (pinterestResponse, error) {
+func (s *Service) handleSearch(ctx context.Context, req pinterestRequest) (pinterestResponse, error) {
 	t0 := time.Now()
-
-	var req pinterestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return pinterestResponse{}, &httpx.HTTPError{
-			Code: http.StatusBadRequest,
-			Body: map[string]any{"detail": "طلب غير صالح: " + err.Error()},
-		}
-	}
 	if strings.TrimSpace(req.Query) == "" && req.Username == "" {
 		return pinterestResponse{}, &httpx.HTTPError{
 			Code: http.StatusBadRequest,
@@ -132,7 +124,7 @@ func (s *Service) handleSearch(r *http.Request) (pinterestResponse, error) {
 	var images []imageResult
 	var scraperErr string
 
-	pins, err := s.runScraper(r.Context(), req)
+	pins, err := s.runScraper(ctx, req)
 	if err != nil {
 		provider = "chromedp-error"
 		scraperErr = err.Error()
@@ -149,7 +141,7 @@ func (s *Service) handleSearch(r *http.Request) (pinterestResponse, error) {
 	// ─── fallback إلى Ferdev ─────────────────────────────────────
 	isBoardMode := req.Username != "" && req.BoardSlug != ""
 	if len(images) == 0 && fallbackFerdev && !isBoardMode {
-		if ferdevImgs := s.ferdevSearch(r.Context(), req.Query, req.Limit); len(ferdevImgs) > 0 {
+		if ferdevImgs := s.ferdevSearch(ctx, req.Query, req.Limit); len(ferdevImgs) > 0 {
 			images = ferdevImgs
 			provider = "ferdev"
 			scraperErr = ""
@@ -158,7 +150,7 @@ func (s *Service) handleSearch(r *http.Request) (pinterestResponse, error) {
 
 	// ─── ترميز base64 اختياري (نفس التقصير b64[:120]+"..." في بايثون) ─
 	if req.AsBase64 && len(images) > 0 {
-		s.encodeThumbnailsBase64(r.Context(), images)
+		s.encodeThumbnailsBase64(ctx, images)
 	}
 
 	if len(images) == 0 && scraperErr == "" {

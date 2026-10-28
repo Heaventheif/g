@@ -69,6 +69,9 @@ func TestWrapJSONLimit_413AndLargerLimitAllows(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", rec.Code)
 	}
+	if !strings.Contains(rec.Body.String(), `"error":"request body too large"`) {
+		t.Fatalf("body = %s, want shared size-limit error", rec.Body.String())
+	}
 
 	big := WrapJSONLimit(1<<20, h)
 	rec = httptest.NewRecorder()
@@ -84,5 +87,8 @@ func TestWrapJSON_InvalidJSONStill400(t *testing.T) {
 	h(rec, httptest.NewRequest("POST", "/", io.NopCloser(strings.NewReader("{bad"))))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"error":"invalid request body"`) {
+		t.Fatalf("body = %s, want shared invalid-body error", rec.Body.String())
 	}
 }

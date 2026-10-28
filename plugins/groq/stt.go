@@ -22,13 +22,7 @@ const whisperModel = "whisper-large-v3"
 // handleSTT is the standalone speech-to-text endpoint used by the stt command.
 // It accepts either an attachment URL or base64 audio and returns only the
 // transcription; unlike /groq it does not ask a chat model to summarize it.
-func (s *Service) handleSTT(r *http.Request) (map[string]any, error) {
-	ctx := r.Context()
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]any{"error": strutil.Truncate(err.Error(), 200)}}
-	}
-
+func (s *Service) handleSTT(ctx context.Context, body map[string]any) (map[string]any, error) {
 	att := parseAttachment(body["attachment"])
 	if att == nil {
 		att = &attachment{
@@ -72,6 +66,9 @@ func (s *Service) handleSTT(r *http.Request) (map[string]any, error) {
 }
 
 const maxSTTBytes = 25 * 1024 * 1024
+
+// Base64 يزيد الحجم بنحو الثلث؛ أضف مساحة صغيرة لبقية حقول JSON.
+const maxSTTBodyBytes = ((maxSTTBytes+2)/3)*4 + (64 << 10)
 
 func (s *Service) transcribeAudio(ctx context.Context, audioRaw []byte, mime, language, responseFormat string) (string, error) {
 	if len(audioRaw) == 0 {
