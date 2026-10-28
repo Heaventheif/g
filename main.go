@@ -34,7 +34,6 @@ import (
 	"sunkenbot/plugins/novel"
 	"sunkenbot/plugins/ping"
 	"sunkenbot/plugins/pinterest"
-	"sunkenbot/plugins/translation"
 )
 
 const defaultPort = "7860"
@@ -48,7 +47,6 @@ var descriptions = map[string]string{
 	"comic":        comic.Description,
 	"gemini":       gemini.Description,
 	"groq":         groq.Description,
-	"translation":  translation.Description,
 	"manga_bridge": mangabridge.Description,
 	"novel":        novel.Description,
 	"ping":         ping.Description,
@@ -71,7 +69,6 @@ func services() []plugins.Service {
 		comic.New(comicClient),
 		gemini.New(geminiClient, session.New("gemini_sessions")),
 		groq.New(shared.Client, groqDL, session.New("groq_sessions")),
-		translation.New(),
 		mangabridge.New(),
 		novel.New(novelClient),
 		pinterest.New(shared.Client),
