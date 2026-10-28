@@ -21,27 +21,3 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
-
-replace golang.org/x/text => github.com/golang/text v0.40.0
-
-replace golang.org/x/crypto => github.com/golang/crypto v0.54.0
-
-replace golang.org/x/sync => github.com/golang/sync v0.22.0
-
-replace golang.org/x/tools => github.com/golang/tools v0.48.0
-
-replace golang.org/x/mod => github.com/golang/mod v0.38.0
-
-replace golang.org/x/net => github.com/golang/net v0.57.0
-
-replace golang.org/x/sys => github.com/golang/sys v0.47.0
-
-replace golang.org/x/term => github.com/golang/term v0.45.0
-
-replace golang.org/x/telemetry => github.com/golang/telemetry v0.0.0-20240228155512-f48c80bd79b2
-
-replace google.golang.org/appengine => github.com/golang/appengine v1.6.8
-
-replace google.golang.org/protobuf => github.com/protocolbuffers/protobuf-go v1.36.6
-
-replace golang.org/x/xerrors => github.com/golang/xerrors v0.0.0-20231012003039-104605ab7028
