@@ -34,6 +34,7 @@ type Cache[K comparable, V any] struct {
 	ttl      time.Duration
 	order    *list.List
 	entries  map[K]*list.Element
+	now      func() time.Time // injectable in tests; time.Now in production
 }
 
 // New creates an empty cache. Unsupported policies fall back to LRU.
@@ -50,6 +51,7 @@ func New[K comparable, V any](capacity int, policy Policy, ttl time.Duration) *C
 		ttl:      ttl,
 		order:    list.New(),
 		entries:  make(map[K]*list.Element),
+		now:      time.Now,
 	}
 }
 
@@ -64,7 +66,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 		return zero, false
 	}
 	item := el.Value.(*entry[K, V])
-	if c.expired(item, time.Now()) {
+	if c.expired(item, c.now()) {
 		c.remove(el)
 		var zero V
 		return zero, false
@@ -81,7 +83,7 @@ func (c *Cache[K, V]) Set(key K, value V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
+	now := c.now()
 	expires := time.Time{}
 	if c.ttl > 0 {
 		expires = now.Add(c.ttl)

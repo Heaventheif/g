@@ -127,10 +127,10 @@ func winnerLabel(result string) *string {
 	return &w
 }
 
-func (s *Service) handleProcessMove(ctx context.Context, req moveRequest) (any, error) {
+func (s *Service) handleProcessMove(ctx context.Context, req moveRequest) (moveResponse, error) {
 	t0 := time.Now()
 	if strings.TrimSpace(req.FEN) == "" {
-		return nil, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": "fen مطلوب"}}
+		return moveResponse{}, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": "fen مطلوب"}}
 	}
 	difficulty := 10
 	if req.Difficulty != nil {
@@ -140,7 +140,7 @@ func (s *Service) handleProcessMove(ctx context.Context, req moveRequest) (any, 
 
 	pos, err := ParseFEN(req.FEN)
 	if err != nil {
-		return nil, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]string{"detail": "FEN غير صالح"}}
+		return moveResponse{}, &httpx.HTTPError{Code: http.StatusBadRequest, Body: map[string]string{"detail": "FEN غير صالح"}}
 	}
 	lastFrom, lastTo := -1, -1
 
@@ -148,11 +148,11 @@ func (s *Service) handleProcessMove(ctx context.Context, req moveRequest) (any, 
 	if raw := strings.TrimSpace(req.Move); raw != "" {
 		m, perr := pos.ParseUCI(raw)
 		if perr != nil {
-			return nil, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": fmt.Sprintf(
+			return moveResponse{}, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": fmt.Sprintf(
 				"❌ صيغة خاطئة: %s\nاستخدم صيغة UCI مثل: e2e4", strings.ToUpper(raw))}}
 		}
 		if !pos.IsLegal(m) {
-			return nil, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": fmt.Sprintf(
+			return moveResponse{}, &httpx.HTTPError{Code: http.StatusUnprocessableEntity, Body: map[string]string{"detail": fmt.Sprintf(
 				"❌ نقلة غير قانونية: %s\nمثال صحيح: e2e4 أو e7e8q", strings.ToUpper(raw))}}
 		}
 		next := pos.Apply(m)

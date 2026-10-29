@@ -32,7 +32,10 @@ const (
 
 var orpheusArabicVoices = []string{"abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"}
 
-var defaultKeys = sync.OnceValue(func() *keyrotate.Manager {
+// Keys is the process-wide GROQ_API_KEY rotation manager. plugins/groq reuses it
+// (groqKeys = tts.Keys) so chat, vision, STT and every TTS caller (including
+// plugins/gemini) share one round-robin cursor and 429 fallback state.
+var Keys = sync.OnceValue(func() *keyrotate.Manager {
 	return keyrotate.FromEnv("GROQ_API_KEY")
 })
 
@@ -56,7 +59,7 @@ func ArabicTTS(ctx context.Context, client *http.Client, text string) (string, e
 // ArabicTTSWithVoice synthesizes Arabic speech with an explicit voice and the
 // GROQ_API_KEY keys configured in the environment. An empty voice selects the default.
 func ArabicTTSWithVoice(ctx context.Context, client *http.Client, text, voice string) (string, error) {
-	return ArabicTTSWithManager(ctx, client, defaultKeys(), text, voice)
+	return ArabicTTSWithManager(ctx, client, Keys(), text, voice)
 }
 
 // ArabicTTSWithManager is ArabicTTSWithVoice with an explicit key manager. It

@@ -40,15 +40,18 @@ func TestFIFOReadAndUpdateDoNotPromote(t *testing.T) {
 }
 
 func TestTTLExpiryAndUpdateRefresh(t *testing.T) {
+	// ساعة وهمية: لا time.Sleep، فلا تقلّب تحت الحمل.
+	now := time.Unix(1_000, 0)
 	c := New[string, string](2, FIFO, 40*time.Millisecond)
+	c.now = func() time.Time { return now }
 	c.Set("a", "old")
-	time.Sleep(25 * time.Millisecond)
+	now = now.Add(25 * time.Millisecond)
 	c.Set("a", "refreshed")
-	time.Sleep(25 * time.Millisecond)
+	now = now.Add(25 * time.Millisecond)
 	if got, ok := c.Get("a"); !ok || got != "refreshed" {
 		t.Fatalf("updated value expired too early: %q, %v", got, ok)
 	}
-	time.Sleep(25 * time.Millisecond)
+	now = now.Add(25 * time.Millisecond)
 	if got, ok := c.Get("a"); ok {
 		t.Fatalf("expired value returned as %q", got)
 	}

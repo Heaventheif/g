@@ -1,6 +1,7 @@
 package novel
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,5 +79,38 @@ func TestNovelRoute_InvalidJSONUsesSharedBodyError(t *testing.T) {
 	svc.Routes()[0].Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error":"invalid request body"`) {
 		t.Fatalf("status/body = %d %s, want normalized 400", rec.Code, rec.Body.String())
+	}
+}
+
+// POST /novel: كل أخطاء التحقق عبر httpx.HTTPError (400) بجسم {"error": ...}
+// ومعها supported_sites عند مصدر غير مدعوم.
+func TestNovelRoute_ValidationErrorShapes(t *testing.T) {
+	h := New(http.DefaultClient).Routes()[0].Handler
+	cases := []struct{ name, body, want string }{
+		{"novel مفقود", `{"chapter":1}`, "novel أو novel_id مطلوب"},
+		{"chapter سالب", `{"novel":"x","chapter":-3}`, "chapter رقم موجب"},
+		{"chapter نص", `{"novel":"x","chapter":"abc"}`, "chapter رقم موجب"},
+		{"site غير مدعوم", `{"novel":"x","chapter":1,"site":"nope"}`, "غير مدعوم"},
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/novel", strings.NewReader(c.body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400 (%s)", c.name, rec.Code, rec.Body.String())
+			continue
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Errorf("%s: جسم غير JSON: %s", c.name, rec.Body.String())
+			continue
+		}
+		if msg, _ := out["error"].(string); !strings.Contains(msg, c.want) {
+			t.Errorf("%s: error = %q، المتوقع يحوي %q", c.name, msg, c.want)
+		}
+		if c.name == "site غير مدعوم" {
+			if _, ok := out["supported_sites"]; !ok {
+				t.Errorf("%s: supported_sites غائب: %v", c.name, out)
+			}
+		}
 	}
 }

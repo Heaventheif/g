@@ -66,9 +66,16 @@ func TestProcessMoveErrors(t *testing.T) {
 	if code != http.StatusUnprocessableEntity || !strings.Contains(out["detail"].(string), "غير قانونية") {
 		t.Errorf("%v", out)
 	}
+	// المفتاح القديم لا يجوز أن يعود: الخطأ دائماً HTTPError بجسم {"detail"}.
+	if _, old := out["illegal_move_error"]; old {
+		t.Errorf("illegal_move_error ظهر من جديد: %v", out)
+	}
 	code, out = post(t, s, `{"fen":"`+start+`","move":"hello"}`)
 	if code != http.StatusUnprocessableEntity || !strings.Contains(out["detail"].(string), "صيغة خاطئة") {
 		t.Errorf("%v", out)
+	}
+	if _, old := out["illegal_move_error"]; old {
+		t.Errorf("illegal_move_error ظهر من جديد: %v", out)
 	}
 	if code, _ := post(t, s, `{"fen":"garbage"}`); code != http.StatusBadRequest {
 		t.Errorf("FEN سيئ: code=%d", code)

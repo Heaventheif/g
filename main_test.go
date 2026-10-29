@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"sunkenbot/internal/plugins"
@@ -95,5 +97,26 @@ func TestCheckAuthConfig(t *testing.T) {
 	}
 	if err := checkAuthConfig("", ""); err != nil {
 		t.Errorf("بلا REQUIRE_AUTH السلوك القديم: %v", err)
+	}
+}
+
+// كل خدمة حقيقية في services() تنفّذ Description() بقيمة غير فارغة، وتُغلق مواردها بعد الاختبار.
+func TestRealServicesAllDescribed(t *testing.T) {
+	svcs := services()
+	t.Cleanup(func() {
+		for _, svc := range svcs {
+			if c, ok := svc.(io.Closer); ok {
+				_ = c.Close()
+			}
+		}
+	})
+	for _, svc := range svcs {
+		d, ok := svc.(interface{ Description() string })
+		if !ok || strings.TrimSpace(d.Description()) == "" {
+			t.Errorf("الخدمة %q بلا Description() غير فارغ", svc.Name())
+		}
+	}
+	if err := checkDescriptions(svcs); err != nil {
+		t.Fatal(err)
 	}
 }

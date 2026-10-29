@@ -8,17 +8,21 @@ import (
 	"sunkenbot/internal/browser"
 )
 
-func TestWaitForCloudflareTitleWithProbe_IsCaseSensitive(t *testing.T) {
-	calls := 0
+// المطابقة غير حساسة لحالة الأحرف: أي كتابة لـ "just a moment" تبقي التحدي قائماً.
+func TestWaitForCloudflareTitleWithProbe_IsCaseInsensitive(t *testing.T) {
+	for _, title := range []string{"Just a moment...", "JUST A MOMENT", "just a moment"} {
+		err := waitForCloudflareTitleWithProbe(context.Background(), 30*time.Millisecond, func(context.Context) (browser.ChallengeObservation, error) {
+			return browser.ChallengeObservation{Text: title}, nil
+		})
+		if err == nil {
+			t.Errorf("%q يجب أن يُعدّ تحدياً قائماً (مهلة متوقعة)", title)
+		}
+	}
 	err := waitForCloudflareTitleWithProbe(context.Background(), time.Second, func(context.Context) (browser.ChallengeObservation, error) {
-		calls++
-		return browser.ChallengeObservation{Text: "JUST A MOMENT"}, nil
+		return browser.ChallengeObservation{Text: "Chapter 12"}, nil
 	})
 	if err != nil {
-		t.Fatalf("different-case title should be considered clear: %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("probe calls = %d, want 1", calls)
+		t.Fatalf("عنوان عادي يجب أن يُعدّ صافياً: %v", err)
 	}
 }
 

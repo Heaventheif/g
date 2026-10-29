@@ -7,14 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"sunkenbot/internal/httpx"
-	"sunkenbot/internal/keyrotate"
 	"sunkenbot/internal/plugins"
 	"sunkenbot/internal/session"
 	"sunkenbot/internal/strutil"
+	"sunkenbot/internal/tts"
 )
 
 // Description defines the plugin description.
@@ -61,10 +60,9 @@ func (s *Service) Routes() []plugins.Route {
 // groqKeys يدير مجموعة مفاتيح Groq (تدوير Round-Robin + تبديل تلقائي عند 429)
 // من متغير بيئة واحد GROQ_API_KEY، يقبل مفتاحاً واحداً أو عدة مفاتيح مفصولة
 // بفواصل (مثل: key1,key2,key3). تُستخدم نفس المجموعة لكل الاستخدامات
-// (دردشة/رؤية/Whisper/TTS) — يُبنى مرة واحدة فقط بفضل sync.OnceValue.
-var groqKeys = sync.OnceValue(func() *keyrotate.Manager {
-	return keyrotate.FromEnv("GROQ_API_KEY")
-})
+// (دردشة/رؤية/Whisper/TTS) — نسخة واحدة تعيش في internal/tts وتتشاركها gemini
+// أيضاً عبر خط TTS، فيبقى مؤشر التدوير موحَّداً.
+var groqKeys = tts.Keys
 
 // handleGroq processes incoming HTTP POST requests to the /groq endpoint.
 func (s *Service) handleGroq(ctx context.Context, body map[string]any) (map[string]any, error) {

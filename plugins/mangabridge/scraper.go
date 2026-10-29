@@ -45,11 +45,11 @@ func waitForCloudflareTitle(ctx context.Context, maxWaitS int) bool {
 
 func waitForCloudflareTitleWithProbe(ctx context.Context, timeout time.Duration, probe browser.ChallengeProbe) error {
 	return browser.WaitForChallengeClearWithOptions(ctx, browser.ChallengeWaitOptions{
-		Markers:       []string{"Just a moment"},
+		Markers:       []string{"just a moment"},
 		Timeout:       timeout,
 		CheckTimeout:  2 * time.Second,
 		PollInterval:  time.Second,
-		CaseSensitive: true,
+		CaseSensitive: false, // "Just a moment" / "JUST A MOMENT" كلاهما تحدٍّ قائم
 		ProbeError:    browser.ProbeErrorRetry,
 		FinalCheck:    true,
 		Probe:         probe,
